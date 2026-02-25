@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -117,7 +118,7 @@ func DetectLandlock() LandlockInfo {
 func applyLandlock(cfg *platform.WrapConfig) error {
 	info := DetectLandlock()
 	if !info.Supported {
-		return fmt.Errorf("landlock not available: filesystem restrictions cannot be enforced (requires kernel >= 5.13)")
+		return errors.New("landlock not available: filesystem restrictions cannot be enforced (requires kernel >= 5.13)")
 	}
 
 	// Determine the set of handled access rights based on ABI version.

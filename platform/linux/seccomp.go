@@ -174,32 +174,36 @@ func buildSeccompFilter(sc seccompSyscalls) []sockFilter {
 
 	filter := make([]sockFilter, 0, total)
 
-	// [0] Load architecture.
-	filter = append(filter, sockFilter{code: bpfLD | bpfW | bpfABS, k: seccompDataArchOffset})
-	// [1] Check arch → KILL on mismatch. Jump offset = killIdx - currentIdx - 1.
-	filter = append(filter, sockFilter{code: bpfJMP | bpfJEQ | bpfK, jt: 0, jf: uint8(killIdx - 1 - 1), k: sc.auditArch}) //nolint:gosec
-	// [2] Load syscall number.
-	filter = append(filter, sockFilter{code: bpfLD | bpfW | bpfABS, k: 0})
-	// [3] If SYS_SOCKET → socket arg check. Jump offset = socketArgIdx - currentIdx - 1.
-	filter = append(filter, sockFilter{code: bpfJMP | bpfJEQ | bpfK, jt: uint8(socketArgIdx - 3 - 1), jf: 0, k: sc.sysSocket}) //nolint:gosec
+	filter = append(filter,
+		// [0] Load architecture.
+		sockFilter{code: bpfLD | bpfW | bpfABS, k: seccompDataArchOffset},
+		// [1] Check arch → KILL on mismatch. Jump offset = killIdx - currentIdx - 1.
+		sockFilter{code: bpfJMP | bpfJEQ | bpfK, jt: 0, jf: uint8(killIdx - 1 - 1), k: sc.auditArch}, //nolint:gosec
+		// [2] Load syscall number.
+		sockFilter{code: bpfLD | bpfW | bpfABS, k: 0},
+		// [3] If SYS_SOCKET → socket arg check. Jump offset = socketArgIdx - currentIdx - 1.
+		sockFilter{code: bpfJMP | bpfJEQ | bpfK, jt: uint8(socketArgIdx - 3 - 1), jf: 0, k: sc.sysSocket}, //nolint:gosec
+	)
 	// [4..4+n-1] Blocked syscall checks → EPERM.
 	for i, nr := range blocked {
 		idx := 4 + i
 		jt := uint8(epermIdx - idx - 1) //nolint:gosec
 		filter = append(filter, sockFilter{code: bpfJMP | bpfJEQ | bpfK, jt: jt, jf: 0, k: nr})
 	}
-	// [4+n] ALLOW — no dangerous syscall matched.
-	filter = append(filter, sockFilter{code: bpfRET | bpfK, k: seccompRetAllow})
-	// [4+n+1] Load first argument (socket domain).
-	filter = append(filter, sockFilter{code: bpfLD | bpfW | bpfABS, k: 16})
-	// [4+n+2] If AF_UNIX → EPERM; else ALLOW.
-	filter = append(filter, sockFilter{code: bpfJMP | bpfJEQ | bpfK, jt: 1, jf: 0, k: afUnix})
-	// [4+n+3] ALLOW — non-AF_UNIX socket.
-	filter = append(filter, sockFilter{code: bpfRET | bpfK, k: seccompRetAllow})
-	// [4+n+4] EPERM.
-	filter = append(filter, sockFilter{code: bpfRET | bpfK, k: seccompRetErrno | 1})
-	// [4+n+5] KILL — architecture mismatch.
-	filter = append(filter, sockFilter{code: bpfRET | bpfK, k: seccompRetKill})
+	filter = append(filter,
+		// [4+n] ALLOW — no dangerous syscall matched.
+		sockFilter{code: bpfRET | bpfK, k: seccompRetAllow},
+		// [4+n+1] Load first argument (socket domain).
+		sockFilter{code: bpfLD | bpfW | bpfABS, k: 16},
+		// [4+n+2] If AF_UNIX → EPERM; else ALLOW.
+		sockFilter{code: bpfJMP | bpfJEQ | bpfK, jt: 1, jf: 0, k: afUnix},
+		// [4+n+3] ALLOW — non-AF_UNIX socket.
+		sockFilter{code: bpfRET | bpfK, k: seccompRetAllow},
+		// [4+n+4] EPERM.
+		sockFilter{code: bpfRET | bpfK, k: seccompRetErrno | 1},
+		// [4+n+5] KILL — architecture mismatch.
+		sockFilter{code: bpfRET | bpfK, k: seccompRetKill},
+	)
 
 	return filter
 }
