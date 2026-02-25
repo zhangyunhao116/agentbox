@@ -147,7 +147,7 @@ func (b *Bridge) Start() error {
 
 	b.listener = ln
 
-	b.config.Logger.Info("bridge started",
+	b.config.Logger.Debug("bridge started",
 		"label", b.config.Label,
 		"socket", b.socketPath,
 		"target", b.config.TargetAddr,
@@ -310,7 +310,7 @@ func (b *Bridge) Shutdown(timeout time.Duration) error {
 		return fmt.Errorf("bridge: remove socket %s: %w", b.socketPath, err)
 	}
 
-	b.config.Logger.Info("bridge stopped", "label", b.config.Label)
+	b.config.Logger.Debug("bridge stopped", "label", b.config.Label)
 	return nil
 }
 

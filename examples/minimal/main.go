@@ -32,8 +32,8 @@ func main() {
 	}
 
 	fmt.Printf("Exit code:  %d\n", result.ExitCode)
-	fmt.Printf("Stdout:     %s", result.Stdout)
-	fmt.Printf("Stderr:     %s", result.Stderr)
+	fmt.Printf("Stdout:     %q\n", result.Stdout)
+	fmt.Printf("Stderr:     %q\n", result.Stderr)
 	fmt.Printf("Sandboxed:  %v\n", result.Sandboxed)
 	fmt.Printf("Duration:   %v\n", result.Duration)
 }

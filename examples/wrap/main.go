@@ -43,7 +43,7 @@ func main() {
 		return
 	}
 
-	fmt.Printf("Output: %s", output)
+	fmt.Printf("Output: %s\n", output)
 
 	// You can also use Wrap with a Manager for more control:
 	cfg := agentbox.DefaultConfig()
@@ -66,5 +66,5 @@ func main() {
 		log.Printf("command2 failed: %v", err)
 		return
 	}
-	fmt.Printf("Output: %s", output2)
+	fmt.Printf("Output: %s\n", output2)
 }

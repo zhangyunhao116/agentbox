@@ -320,22 +320,22 @@ func TestBuildUlimitCommandsFileDescriptors(t *testing.T) {
 }
 
 func TestBuildUlimitCommandsMemory(t *testing.T) {
+	// MaxMemoryBytes is skipped on macOS (ulimit -v not supported).
 	result := buildUlimitCommands(&platform.ResourceLimits{
 		MaxMemoryBytes: 2 * 1024 * 1024 * 1024, // 2 GB
 	})
-	expected := "ulimit -v 2097152" // 2GB in KB
-	if result != expected {
-		t.Errorf("got %q, want %q", result, expected)
+	if result != "" {
+		t.Errorf("MaxMemoryBytes should be skipped on macOS, got %q", result)
 	}
 }
 
 func TestBuildUlimitCommandsSmallMemory(t *testing.T) {
-	// Memory less than 1KB should be clamped to 1KB.
+	// MaxMemoryBytes is skipped on macOS regardless of size.
 	result := buildUlimitCommands(&platform.ResourceLimits{
 		MaxMemoryBytes: 500,
 	})
-	if result != "ulimit -v 1" {
-		t.Errorf("got %q, want %q", result, "ulimit -v 1")
+	if result != "" {
+		t.Errorf("MaxMemoryBytes should be skipped on macOS, got %q", result)
 	}
 }
 
@@ -368,8 +368,9 @@ func TestBuildUlimitCommandsAllFields(t *testing.T) {
 	if !strings.Contains(result, "ulimit -n 256") {
 		t.Errorf("missing ulimit -n: %s", result)
 	}
-	if !strings.Contains(result, "ulimit -v") {
-		t.Errorf("missing ulimit -v: %s", result)
+	// MaxMemoryBytes (ulimit -v) is skipped on macOS.
+	if strings.Contains(result, "ulimit -v") {
+		t.Errorf("ulimit -v should be skipped on macOS: %s", result)
 	}
 	if !strings.Contains(result, "ulimit -t 60") {
 		t.Errorf("missing ulimit -t: %s", result)

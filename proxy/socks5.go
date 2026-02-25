@@ -85,7 +85,7 @@ func (r *domainRuleSet) Allow(ctx context.Context, req *socks5.Request) (context
 	}
 
 	if !allowed {
-		r.logger.Info("socks5: connection denied by filter", "host", host, "port", port)
+		r.logger.Debug("socks5: connection denied by filter", "host", host, "port", port)
 	} else {
 		r.logger.Debug("socks5: connection allowed", "host", host, "port", port)
 	}
@@ -152,7 +152,7 @@ func (r *proxyNameResolver) Resolve(ctx context.Context, name string) (context.C
 	for _, addr := range addrs {
 		if isBlockedIP(addr.IP) {
 			if r.logger != nil {
-				r.logger.Info("socks5: resolved IP is blocked", "name", name, "ip", addr.IP.String())
+				r.logger.Debug("socks5: resolved IP is blocked", "name", name, "ip", addr.IP.String())
 			}
 			return ctx, nil, fmt.Errorf("resolved IP %s for %q is blocked", addr.IP, name)
 		}
@@ -177,7 +177,7 @@ func dialWithIPCheck(logger *slog.Logger, resolver *net.Resolver) func(ctx conte
 		// If the host is already an IP, check it directly.
 		if ip := net.ParseIP(host); ip != nil {
 			if isBlockedIP(ip) {
-				logger.Info("socks5: dial blocked IP", "ip", ip.String(), "port", port)
+				logger.Debug("socks5: dial blocked IP", "ip", ip.String(), "port", port)
 				return nil, fmt.Errorf("connection to blocked IP %s is denied", ip)
 			}
 			var d net.Dialer
@@ -197,7 +197,7 @@ func dialWithIPCheck(logger *slog.Logger, resolver *net.Resolver) func(ctx conte
 		// Reject if ANY resolved IP is blocked (matching HTTP proxy behavior).
 		for _, ipAddr := range ips {
 			if isBlockedIP(ipAddr.IP) {
-				logger.Info("socks5: blocked resolved IP", "host", host, "ip", ipAddr.IP.String())
+				logger.Debug("socks5: blocked resolved IP", "host", host, "ip", ipAddr.IP.String())
 				return nil, fmt.Errorf("resolved IP %s for %q is blocked", ipAddr.IP, host)
 			}
 		}
@@ -311,7 +311,8 @@ func (p *SOCKS5Proxy) ListenAndServe(addr string) (net.Addr, error) {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	logger.Info("socks5: proxy started", "addr", ln.Addr().String())
+	// Log at Debug: proxy lifecycle is an internal detail, not user-facing.
+	logger.Debug("socks5: proxy started", "addr", ln.Addr().String())
 
 	go func() {
 		if err := p.server.Serve(ln); err != nil {
@@ -345,7 +346,7 @@ func (p *SOCKS5Proxy) Shutdown(ctx context.Context) error {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	if addr != nil {
-		logger.Info("socks5: proxy shutting down", "addr", addr.String())
+		logger.Debug("socks5: proxy shutting down", "addr", addr.String())
 	}
 
 	return ln.Close()

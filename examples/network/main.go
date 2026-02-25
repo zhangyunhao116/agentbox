@@ -54,7 +54,7 @@ func main() {
 		log.Printf("exec failed: %v", err)
 		return
 	}
-	fmt.Printf("Exit: %d\nOutput: %s", result.ExitCode, result.Stdout)
+	fmt.Printf("Exit: %d\nOutput: %s\n", result.ExitCode, result.Stdout)
 
 	// You can also override network config per-call using WithNetwork.
 	result, err = mgr.Exec(ctx, "echo per-call network override",
@@ -66,7 +66,7 @@ func main() {
 		log.Printf("exec with blocked network failed: %v", err)
 		return
 	}
-	fmt.Printf("Exit: %d\nOutput: %s", result.ExitCode, result.Stdout)
+	fmt.Printf("Exit: %d\nOutput: %s\n", result.ExitCode, result.Stdout)
 
 	// Demonstrate the three network modes.
 	fmt.Println()

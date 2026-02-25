@@ -131,7 +131,9 @@ func (p *Server) Start(ctx context.Context) (httpPort, socksPort int, err error)
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	logger.Info("proxy server started",
+	// Log at Debug: proxy lifecycle is an internal implementation detail that
+	// should not surface to end users on every command execution.
+	logger.Debug("proxy server started",
 		"http_port", httpPort,
 		"socks5_port", socksPort,
 	)

@@ -354,20 +354,24 @@ func (m *manager) buildWrapConfig(snap *configSnapshot, co *callOptions) *platfo
 		}
 	}
 
-	// Warn about non-existent paths in DenyWrite/DenyRead — protection may
-	// be incomplete if the path does not fully exist on disk.
+	// Check non-existent paths in DenyWrite/DenyRead — protection may be
+	// incomplete if the path does not fully exist on disk. We still record
+	// the warning in wcfg.Warnings for programmatic access, but log at Debug
+	// level because DefaultConfig includes many home-relative credential
+	// paths (e.g. ~/.gnupg, ~/.kube) that commonly don't exist, and logging
+	// them at Warn produces excessive noise on every command execution.
 	for _, p := range wcfg.DenyWrite {
 		if first := pathutil.FindFirstNonExistent(p); first != "" {
 			w := fmt.Sprintf("DenyWrite path %q: component %q does not exist, protection may be incomplete", p, first)
 			wcfg.Warnings = append(wcfg.Warnings, w)
-			m.logger.Warn("non-existent deny path", "kind", "DenyWrite", "path", p, "missing", first)
+			m.logger.Debug("non-existent deny path", "kind", "DenyWrite", "path", p, "missing", first)
 		}
 	}
 	for _, p := range wcfg.DenyRead {
 		if first := pathutil.FindFirstNonExistent(p); first != "" {
 			w := fmt.Sprintf("DenyRead path %q: component %q does not exist, protection may be incomplete", p, first)
 			wcfg.Warnings = append(wcfg.Warnings, w)
-			m.logger.Warn("non-existent deny path", "kind", "DenyRead", "path", p, "missing", first)
+			m.logger.Debug("non-existent deny path", "kind", "DenyRead", "path", p, "missing", first)
 		}
 	}
 

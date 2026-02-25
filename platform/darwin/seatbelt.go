@@ -154,12 +154,14 @@ func buildUlimitCommands(limits *platform.ResourceLimits) string {
 	}
 
 	if limits.MaxMemoryBytes > 0 {
-		// ulimit -v takes kilobytes.
-		kbytes := limits.MaxMemoryBytes / 1024
-		if kbytes == 0 {
-			kbytes = 1
-		}
-		cmds = append(cmds, fmt.Sprintf("ulimit -v %d", kbytes))
+		// NOTE: ulimit -v (virtual memory) is not supported on macOS,
+		// especially on Apple Silicon where the kernel rejects the call with
+		// EINVAL. Since DefaultConfig always sets MaxMemoryBytes (2 GB), this
+		// would produce a noisy "cannot modify limit" stderr on every command.
+		// We skip it entirely and log at Debug, same as MaxProcesses below.
+		logger.Debug("MaxMemoryBytes resource limit requested but skipped on macOS",
+			"max_memory_bytes", limits.MaxMemoryBytes,
+		)
 	}
 
 	if limits.MaxCPUSeconds > 0 {
@@ -169,7 +171,7 @@ func buildUlimitCommands(limits *platform.ResourceLimits) string {
 	if limits.MaxProcesses > 0 {
 		// NOTE: RLIMIT_NPROC on macOS has unusual kernel behavior.
 		// We still log it but skip setting it via ulimit.
-		logger.Info("MaxProcesses resource limit requested but skipped on macOS",
+		logger.Debug("MaxProcesses resource limit requested but skipped on macOS",
 			"max_processes", limits.MaxProcesses,
 		)
 	}

@@ -49,7 +49,7 @@ func main() {
 		}
 		fmt.Printf("--- %s ---\n", cmd)
 		fmt.Printf("  exit=%d sandboxed=%v\n", result.ExitCode, result.Sandboxed)
-		fmt.Printf("  stdout=%s", result.Stdout)
+		fmt.Printf("  stdout=%s\n", result.Stdout)
 	}
 
 	// ExecArgs lets you pass the program and arguments separately.
@@ -58,6 +58,6 @@ func main() {
 		log.Printf("ExecArgs failed: %v", err)
 	} else {
 		fmt.Printf("--- ExecArgs ---\n")
-		fmt.Printf("  exit=%d stdout=%s", result.ExitCode, result.Stdout)
+		fmt.Printf("  exit=%d stdout=%s\n", result.ExitCode, result.Stdout)
 	}
 }

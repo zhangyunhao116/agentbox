@@ -235,7 +235,7 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !allowed {
-			p.config.Logger.Info("request denied by filter", "host", host, "port", port)
+			p.config.Logger.Debug("request denied by filter", "host", host, "port", port)
 			http.Error(w, "proxy: request denied by filter", http.StatusForbidden)
 			return
 		}
@@ -304,7 +304,7 @@ func (p *HTTPProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !allowed {
-			p.config.Logger.Info("CONNECT denied by filter", "host", host, "port", port)
+			p.config.Logger.Debug("CONNECT denied by filter", "host", host, "port", port)
 			http.Error(w, "proxy: request denied by filter", http.StatusForbidden)
 			return
 		}

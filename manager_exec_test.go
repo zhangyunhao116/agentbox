@@ -721,6 +721,7 @@ func TestManagerExecArgsWithTimeout(t *testing.T) {
 }
 
 func TestRunCommandNonExitError(t *testing.T) {
+	useStubPlatform(t)
 	cfg := DefaultConfig()
 	cfg.FallbackPolicy = FallbackWarn
 	mgr, err := NewManager(cfg)

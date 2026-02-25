@@ -4,3 +4,6 @@
 - Some syscall error branches (e.g., EPERM from kill(2)) are intentionally left uncovered when the only way to trigger them in a test would risk catastrophic side effects. When leaving such a branch uncovered, add a comment block explaining why, and add defensive guards in the production code.
 
 - All code must pass `golangci-lint run` (config: `.golangci.yml`). Read `.golangci.yml` before writing code and follow the enabled linters and rules.
+- All tests, linting, and examples must pass on both macOS and Linux.
+- Record user-visible changes in `CHANGELOG.md`.
+- Commit messages follow Go style: `pkg/path: short description` (lowercase, no period). Use `all:` when touching multiple packages.
