@@ -1,0 +1,131 @@
+# golangci-lint configuration for agentbox.
+# See https://golangci-lint.run/docs/configuration/file/
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    # Bug detection
+    - bodyclose
+    - durationcheck
+    - errcheck
+    - errchkjson
+    - errorlint
+    - govet
+    - ineffassign
+    - makezero
+    - nilerr
+    - staticcheck
+    - unused
+
+    # Style & best practices
+    - copyloopvar
+    - dupword
+    - goconst
+    - gocritic
+    - gosec
+    - misspell
+    - nakedret
+    - perfsprint
+    - prealloc
+    - revive
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - whitespace
+
+    # Code quality
+    - gocyclo
+    - nestif
+
+  disable:
+    # Too noisy / opinionated for this project
+    - exhaustruct     # requires all struct fields to be set
+    - wrapcheck       # too strict for internal error wrapping
+    - varnamelen      # short names are fine in Go
+    - ireturn         # returning interfaces is fine for our API
+    - err113          # we use sentinel errors with %w
+    - nlreturn        # style preference
+    - wsl             # style preference
+    - godox           # we allow TODO comments
+    - funlen          # some functions are legitimately long
+    - gochecknoglobals # we use package-level vars intentionally
+    - gochecknoinits  # we use init() for reexec registration
+    - mnd             # magic numbers are fine in tests and configs
+    - testpackage     # we test internal functions
+    - paralleltest    # not all tests can run in parallel
+    - depguard        # no dependency restrictions needed
+
+  settings:
+    errcheck:
+      # Don't check error returns in test files for common patterns.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os/exec.Cmd).Run
+        - (*os/exec.Cmd).Start
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        - hugeParam  # we pass structs by value intentionally
+    gocyclo:
+      min-complexity: 25
+    nestif:
+      min-complexity: 8
+    nakedret:
+      max-func-lines: 30
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: increment-decrement
+        - name: var-naming
+        - name: range
+        - name: receiver-naming
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: redefines-builtin-id
+    gosec:
+      excludes:
+        - G104  # unhandled errors (covered by errcheck)
+        - G304  # file path from variable (expected in sandbox tool)
+        - G204  # subprocess with variable (core functionality)
+
+  exclusions:
+    generated: strict
+    presets:
+      - comments
+      - common-false-positives
+    rules:
+      # Relax errcheck in test files.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - goconst
+          - dupword
+      # Relax for example programs.
+      - path: examples/
+        linters:
+          - errcheck
+          - gosec
+      # Allow empty branches in tests (e.g., testing that code doesn't panic).
+      - path: _test\.go
+        text: "SA9003:"
+        linters:
+          - staticcheck
+
+run:
+  timeout: 5m
+  tests: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
