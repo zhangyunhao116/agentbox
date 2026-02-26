@@ -23,7 +23,12 @@ func main() {
 	if agentbox.MaybeSandboxInit() {
 		return
 	}
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
 
+func run() error {
 	ctx := context.Background()
 	cfg := agentbox.DefaultConfig()
 
@@ -39,15 +44,14 @@ func main() {
 
 	mgr, err := agentbox.NewManager(cfg)
 	if err != nil {
-		log.Fatalf("new manager: %v", err)
+		return fmt.Errorf("new manager: %w", err)
 	}
 	defer mgr.Cleanup(ctx)
 
 	// 1. Normal command — no approval needed.
 	result, err := mgr.Exec(ctx, "echo hello")
 	if err != nil {
-		log.Printf("echo: %v", err)
-		return
+		return fmt.Errorf("echo: %w", err)
 	}
 	fmt.Printf("Normal command:\n")
 	fmt.Printf("  exit=%d stdout=%q\n", result.ExitCode, result.Stdout)
@@ -71,12 +75,13 @@ func main() {
 	// No ApprovalCallback set.
 	mgr2, err := agentbox.NewManager(cfg2)
 	if err != nil {
-		log.Printf("new manager2: %v", err)
-		return
+		return fmt.Errorf("new manager2: %w", err)
 	}
 	defer mgr2.Cleanup(ctx)
 
 	_, err = mgr2.Exec(ctx, "docker build .")
 	fmt.Printf("Escalated command (no callback):\n")
 	fmt.Printf("  error=%v\n", err)
+
+	return nil
 }

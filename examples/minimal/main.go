@@ -21,14 +21,19 @@ func main() {
 	if agentbox.MaybeSandboxInit() {
 		return
 	}
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
 
+func run() error {
 	ctx := context.Background()
 
 	// Exec creates a temporary manager with DefaultConfig, runs the command,
 	// and cleans up automatically.
 	result, err := agentbox.Exec(ctx, "echo hello from sandbox")
 	if err != nil {
-		log.Fatalf("exec failed: %v", err)
+		return fmt.Errorf("exec failed: %w", err)
 	}
 
 	fmt.Printf("Exit code:  %d\n", result.ExitCode)
@@ -36,4 +41,6 @@ func main() {
 	fmt.Printf("Stderr:     %q\n", result.Stderr)
 	fmt.Printf("Sandboxed:  %v\n", result.Sandboxed)
 	fmt.Printf("Duration:   %v\n", result.Duration)
+
+	return nil
 }

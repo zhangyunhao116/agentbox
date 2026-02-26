@@ -1,10 +1,10 @@
 # Makefile for agentbox
 # See CONTRIBUTING.md for development workflow.
 
-.PHONY: build test test-race lint vet cover bench clean check fmt fmt-check
+.PHONY: build test test-race test-examples lint vet cover bench clean check fmt fmt-check
 
 # Default target runs the full CI check suite.
-check: fmt-check vet lint test-race
+check: fmt-check vet lint test-race test-examples
 
 build:
 	go build ./...
@@ -14,6 +14,9 @@ test:
 
 test-race:
 	CGO_ENABLED=0 go test -race -count=1 ./...
+
+test-examples:
+	CGO_ENABLED=0 go test -count=1 ./examples/...
 
 lint:
 	golangci-lint run
