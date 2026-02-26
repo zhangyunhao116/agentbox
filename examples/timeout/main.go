@@ -19,11 +19,16 @@ func main() {
 	if agentbox.MaybeSandboxInit() {
 		return
 	}
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
 
+func run() error {
 	cfg := agentbox.DefaultConfig()
 	mgr, err := agentbox.NewManager(cfg)
 	if err != nil {
-		log.Fatalf("new manager: %v", err)
+		return fmt.Errorf("new manager: %w", err)
 	}
 	defer mgr.Cleanup(context.Background())
 
@@ -33,8 +38,7 @@ func main() {
 
 	result, err := mgr.Exec(ctx, "echo fast command")
 	if err != nil {
-		log.Printf("fast command: %v", err)
-		return
+		return fmt.Errorf("fast command: %w", err)
 	}
 	fmt.Printf("Fast command:\n")
 	fmt.Printf("  exit=%d stdout=%q duration=%v\n", result.ExitCode, result.Stdout, result.Duration.Truncate(time.Millisecond))
@@ -64,4 +68,6 @@ func main() {
 		fmt.Printf("WithTimeout option:\n")
 		fmt.Printf("  exit=%d (non-zero means killed)\n", result.ExitCode)
 	}
+
+	return nil
 }

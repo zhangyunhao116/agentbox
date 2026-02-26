@@ -20,7 +20,12 @@ func main() {
 	if agentbox.MaybeSandboxInit() {
 		return
 	}
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
 
+func run() error {
 	cfg := agentbox.DefaultConfig()
 
 	// Configure network filtering with specific allowed domains.
@@ -41,7 +46,7 @@ func main() {
 
 	mgr, err := agentbox.NewManager(cfg)
 	if err != nil {
-		log.Fatalf("new manager: %v", err)
+		return fmt.Errorf("new manager: %w", err)
 	}
 	defer mgr.Cleanup(context.Background())
 
@@ -51,8 +56,7 @@ func main() {
 	// Only requests to allowed domains will succeed.
 	result, err := mgr.Exec(ctx, "echo network filtering is active")
 	if err != nil {
-		log.Printf("exec failed: %v", err)
-		return
+		return fmt.Errorf("exec failed: %w", err)
 	}
 	fmt.Printf("Exit: %d\nOutput: %s\n", result.ExitCode, result.Stdout)
 
@@ -63,8 +67,7 @@ func main() {
 		}),
 	)
 	if err != nil {
-		log.Printf("exec with blocked network failed: %v", err)
-		return
+		return fmt.Errorf("exec with blocked network failed: %w", err)
 	}
 	fmt.Printf("Exit: %d\nOutput: %s\n", result.ExitCode, result.Stdout)
 
@@ -74,4 +77,6 @@ func main() {
 	fmt.Printf("  NetworkFiltered = %d (%s)\n", agentbox.NetworkFiltered, agentbox.NetworkFiltered)
 	fmt.Printf("  NetworkBlocked  = %d (%s)\n", agentbox.NetworkBlocked, agentbox.NetworkBlocked)
 	fmt.Printf("  NetworkAllowed  = %d (%s)\n", agentbox.NetworkAllowed, agentbox.NetworkAllowed)
+
+	return nil
 }

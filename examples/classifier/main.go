@@ -10,11 +10,19 @@ package main
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/zhangyunhao116/agentbox"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+//nolint:unparam // error return kept for consistency with other examples.
+func run() error {
 	// DefaultClassifier includes built-in security rules.
 	classifier := agentbox.DefaultClassifier()
 
@@ -54,4 +62,6 @@ func main() {
 	)
 	result = custom.Classify("ls")
 	fmt.Printf("\n  Chained classifier: ls → %s\n", result.Decision)
+
+	return nil
 }

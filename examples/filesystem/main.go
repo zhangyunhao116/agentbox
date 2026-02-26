@@ -27,18 +27,23 @@ func main() {
 	if agentbox.MaybeSandboxInit() {
 		return
 	}
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
 
+func run() error {
 	ctx := context.Background()
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		log.Fatalf("get home dir: %v", err)
+		return fmt.Errorf("get home dir: %w", err)
 	}
 
 	// Create a temporary directory as the writable root.
 	workdir, err := os.MkdirTemp("", "agentbox-fs-example-*")
 	if err != nil {
-		log.Fatalf("create temp dir: %v", err)
+		return fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(workdir)
 
@@ -47,8 +52,7 @@ func main() {
 
 	mgr, err := agentbox.NewManager(cfg)
 	if err != nil {
-		log.Printf("new manager: %v", err)
-		return
+		return fmt.Errorf("new manager: %w", err)
 	}
 	defer mgr.Cleanup(ctx)
 
@@ -56,8 +60,7 @@ func main() {
 	target := filepath.Join(workdir, "hello.txt")
 	result, err := mgr.Exec(ctx, fmt.Sprintf("echo sandbox-was-here > %s && cat %s", target, target))
 	if err != nil {
-		log.Printf("write to writable root: %v", err)
-		return
+		return fmt.Errorf("write to writable root: %w", err)
 	}
 	fmt.Printf("Write to writable root:\n")
 	fmt.Printf("  exit=%d stdout=%q\n", result.ExitCode, result.Stdout)
@@ -66,8 +69,7 @@ func main() {
 	// /etc is in DenyWrite by default on both macOS and Linux.
 	result, err = mgr.Exec(ctx, "touch /etc/agentbox-escape-attempt 2>&1")
 	if err != nil {
-		log.Printf("write outside root: %v", err)
-		return
+		return fmt.Errorf("write outside root: %w", err)
 	}
 	fmt.Printf("Write to /etc:\n")
 	fmt.Printf("  exit=%d denied=%v\n", result.ExitCode, result.ExitCode != 0)
@@ -78,9 +80,10 @@ func main() {
 	sshDir := filepath.Join(home, ".ssh")
 	result, err = mgr.Exec(ctx, fmt.Sprintf("ls %s 2>&1", sshDir))
 	if err != nil {
-		log.Printf("read sensitive path: %v", err)
-		return
+		return fmt.Errorf("read sensitive path: %w", err)
 	}
 	fmt.Printf("Read %s:\n", sshDir)
 	fmt.Printf("  exit=%d denied=%v\n", result.ExitCode, result.ExitCode != 0)
+
+	return nil
 }

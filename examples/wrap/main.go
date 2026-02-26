@@ -22,7 +22,12 @@ func main() {
 	if agentbox.MaybeSandboxInit() {
 		return
 	}
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
 
+func run() error {
 	ctx := context.Background()
 
 	// Build a regular exec.Cmd.
@@ -32,15 +37,14 @@ func main() {
 	// The cleanup function MUST be called after the command finishes.
 	cleanup, err := agentbox.Wrap(ctx, cmd)
 	if err != nil {
-		log.Fatalf("wrap failed: %v", err)
+		return fmt.Errorf("wrap failed: %w", err)
 	}
 	defer cleanup()
 
 	// Run the command as usual — it now executes inside the sandbox.
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("command failed: %v", err)
-		return
+		return fmt.Errorf("command failed: %w", err)
 	}
 
 	fmt.Printf("Output: %s\n", output)
@@ -50,21 +54,20 @@ func main() {
 
 	mgr, err := agentbox.NewManager(cfg)
 	if err != nil {
-		log.Printf("new manager: %v", err)
-		return
+		return fmt.Errorf("new manager: %w", err)
 	}
 	defer mgr.Cleanup(ctx)
 
 	cmd2 := exec.CommandContext(ctx, "echo", "manager-wrapped output")
 	if err := mgr.Wrap(ctx, cmd2); err != nil {
-		log.Printf("manager wrap failed: %v", err)
-		return
+		return fmt.Errorf("manager wrap failed: %w", err)
 	}
 
 	output2, err := cmd2.CombinedOutput()
 	if err != nil {
-		log.Printf("command2 failed: %v", err)
-		return
+		return fmt.Errorf("command2 failed: %w", err)
 	}
 	fmt.Printf("Output: %s\n", output2)
+
+	return nil
 }

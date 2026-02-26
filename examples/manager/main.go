@@ -18,7 +18,12 @@ func main() {
 	if agentbox.MaybeSandboxInit() {
 		return
 	}
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
 
+func run() error {
 	// Create a config with secure defaults.
 	cfg := agentbox.DefaultConfig()
 
@@ -28,7 +33,7 @@ func main() {
 	// Create a manager — reuse it for multiple commands.
 	mgr, err := agentbox.NewManager(cfg)
 	if err != nil {
-		log.Fatalf("new manager: %v", err)
+		return fmt.Errorf("new manager: %w", err)
 	}
 	defer mgr.Cleanup(context.Background())
 
@@ -42,10 +47,9 @@ func main() {
 	}
 
 	for _, cmd := range commands {
-		result, err := mgr.Exec(ctx, cmd)
-		if err != nil {
-			log.Printf("command %q failed: %v", cmd, err)
-			continue
+		result, execErr := mgr.Exec(ctx, cmd)
+		if execErr != nil {
+			return fmt.Errorf("command %q failed: %w", cmd, execErr)
 		}
 		fmt.Printf("--- %s ---\n", cmd)
 		fmt.Printf("  exit=%d sandboxed=%v\n", result.ExitCode, result.Sandboxed)
@@ -55,9 +59,10 @@ func main() {
 	// ExecArgs lets you pass the program and arguments separately.
 	result, err := mgr.ExecArgs(ctx, "echo", []string{"hello", "from", "ExecArgs"})
 	if err != nil {
-		log.Printf("ExecArgs failed: %v", err)
-	} else {
-		fmt.Printf("--- ExecArgs ---\n")
-		fmt.Printf("  exit=%d stdout=%s\n", result.ExitCode, result.Stdout)
+		return fmt.Errorf("ExecArgs failed: %w", err)
 	}
+	fmt.Printf("--- ExecArgs ---\n")
+	fmt.Printf("  exit=%d stdout=%s\n", result.ExitCode, result.Stdout)
+
+	return nil
 }
