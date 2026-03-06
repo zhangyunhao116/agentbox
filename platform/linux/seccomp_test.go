@@ -470,6 +470,32 @@ func TestSeccompSyscallsFor_Amd64(t *testing.T) {
 		{"sysSwapoff", sc.sysSwapoff, 168},
 		{"sysMknod", sc.sysMknod, 133},
 		{"sysMknodat", sc.sysMknodat, 259},
+		{"sysKexecLoad", sc.sysKexecLoad, 246},
+		{"sysKexecFileLoad", sc.sysKexecFileLoad, 320},
+		{"sysInitModule", sc.sysInitModule, 175},
+		{"sysFinitModule", sc.sysFinitModule, 313},
+		{"sysDeleteModule", sc.sysDeleteModule, 176},
+		{"sysPerfEventOpen", sc.sysPerfEventOpen, 298},
+		{"sysBpf", sc.sysBpf, 321},
+		{"sysUserfaultfd", sc.sysUserfaultfd, 323},
+		{"sysOpenByHandleAt", sc.sysOpenByHandleAt, 304},
+		{"sysSetns", sc.sysSetns, 308},
+		{"sysUnshare", sc.sysUnshare, 272},
+		{"sysPivotRoot", sc.sysPivotRoot, 155},
+		{"sysChroot", sc.sysChroot, 161},
+		{"sysAcct", sc.sysAcct, 163},
+		{"sysKcmp", sc.sysKcmp, 312},
+		{"sysAddKey", sc.sysAddKey, 248},
+		{"sysRequestKey", sc.sysRequestKey, 249},
+		{"sysKeyctl", sc.sysKeyctl, 250},
+		{"sysLookupDcookie", sc.sysLookupDcookie, 212},
+		{"sysMbind", sc.sysMbind, 237},
+		{"sysMovePages", sc.sysMovePages, 279},
+		{"sysIoperm", sc.sysIoperm, 173},
+		{"sysIopl", sc.sysIopl, 172},
+		{"sysClockSettime", sc.sysClockSettime, 227},
+		{"sysSettimeofday", sc.sysSettimeofday, 164},
+		{"sysNfsservctl", sc.sysNfsservctl, 180},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -499,6 +525,32 @@ func TestSeccompSyscallsFor_Arm64(t *testing.T) {
 		{"sysSwapoff", sc.sysSwapoff, 225},
 		{"sysMknod", sc.sysMknod, 0},
 		{"sysMknodat", sc.sysMknodat, 33},
+		{"sysKexecLoad", sc.sysKexecLoad, 104},
+		{"sysKexecFileLoad", sc.sysKexecFileLoad, 294},
+		{"sysInitModule", sc.sysInitModule, 105},
+		{"sysFinitModule", sc.sysFinitModule, 273},
+		{"sysDeleteModule", sc.sysDeleteModule, 106},
+		{"sysPerfEventOpen", sc.sysPerfEventOpen, 241},
+		{"sysBpf", sc.sysBpf, 280},
+		{"sysUserfaultfd", sc.sysUserfaultfd, 282},
+		{"sysOpenByHandleAt", sc.sysOpenByHandleAt, 265},
+		{"sysSetns", sc.sysSetns, 268},
+		{"sysUnshare", sc.sysUnshare, 97},
+		{"sysPivotRoot", sc.sysPivotRoot, 41},
+		{"sysChroot", sc.sysChroot, 51},
+		{"sysAcct", sc.sysAcct, 89},
+		{"sysKcmp", sc.sysKcmp, 272},
+		{"sysAddKey", sc.sysAddKey, 217},
+		{"sysRequestKey", sc.sysRequestKey, 218},
+		{"sysKeyctl", sc.sysKeyctl, 219},
+		{"sysLookupDcookie", sc.sysLookupDcookie, 18},
+		{"sysMbind", sc.sysMbind, 235},
+		{"sysMovePages", sc.sysMovePages, 239},
+		{"sysIoperm", sc.sysIoperm, 0},
+		{"sysIopl", sc.sysIopl, 0},
+		{"sysClockSettime", sc.sysClockSettime, 112},
+		{"sysSettimeofday", sc.sysSettimeofday, 170},
+		{"sysNfsservctl", sc.sysNfsservctl, 42},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -515,5 +567,34 @@ func TestSeccompSyscallsFor_Unsupported(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported architecture") {
 		t.Errorf("error = %v, want 'unsupported architecture'", err)
+	}
+}
+
+// TestBuildSeccompFilter_BlockedCount verifies the expanded blocklist contains
+// the expected number of syscalls for both architectures.
+func TestBuildSeccompFilter_BlockedCount(t *testing.T) {
+	tests := []struct {
+		arch string
+		// Expected minimum blocked syscalls. amd64 has ioperm+iopl,
+		// arm64 does not (sysMknod is also 0 on arm64).
+		minBlocked int
+	}{
+		{"amd64", 34}, // 30 unconditional + mknod + mknodat + ioperm + iopl
+		{"arm64", 31}, // 30 unconditional + mknodat (mknod=0, ioperm=0, iopl=0)
+	}
+	for _, tt := range tests {
+		t.Run(tt.arch, func(t *testing.T) {
+			sc, err := seccompSyscallsFor(tt.arch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			filter := buildSeccompFilter(sc)
+			// Each blocked syscall produces 1 BPF instruction.
+			// Total = 4 (header) + N (blocked) + 6 (footer).
+			n := len(filter) - 4 - 6
+			if n < tt.minBlocked {
+				t.Errorf("arch %s: blocked syscall count = %d, want >= %d", tt.arch, n, tt.minBlocked)
+			}
+		})
 	}
 }

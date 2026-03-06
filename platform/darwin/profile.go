@@ -302,7 +302,8 @@ func (b *profileBuilder) writeNetwork(cfg *platform.WrapConfig) {
 
 	b.comment("Network: deny all, allow proxy ports on localhost")
 	b.line("(deny network*)")
-	b.line(`(allow network* (local udp "*:*"))`)
+	b.line(`(allow network* (remote udp "localhost:53"))`)
+	b.line(`(allow network* (remote udp "localhost:5353"))`)
 	if cfg.HTTPProxyPort > 0 {
 		b.linef(`(allow network* (remote tcp "localhost:%d"))`, cfg.HTTPProxyPort)
 	}

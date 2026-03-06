@@ -10,6 +10,10 @@ import (
 // nopManager is a pass-through Manager that executes commands without
 // any sandboxing. It is returned when FallbackWarn is set and the
 // platform sandbox is unavailable.
+//
+// Env policy: nopManager intentionally does not filter sensitive env vars
+// because it is the unsandboxed fallback path. Env sanitization is handled
+// by platform-specific sandbox implementations.
 type nopManager struct {
 	mu               sync.Mutex
 	closed           bool
@@ -89,7 +93,7 @@ func (n *nopManager) Wrap(ctx context.Context, cmd *exec.Cmd, opts ...Option) er
 		return err
 	}
 
-	// Apply per-call env vars.
+	// Apply per-call env vars (nop does not filter; see nopManager doc).
 	if len(co.env) > 0 {
 		cmd.Env = append(cmd.Environ(), co.env...)
 	}
@@ -135,7 +139,7 @@ func (n *nopManager) Exec(ctx context.Context, command string, opts ...Option) (
 		cmd.Dir = co.workingDir
 	}
 
-	// Apply per-call env vars.
+	// Apply per-call env vars (nop does not filter; see nopManager doc).
 	if len(co.env) > 0 {
 		cmd.Env = append(cmd.Environ(), co.env...)
 	}
@@ -178,7 +182,7 @@ func (n *nopManager) ExecArgs(ctx context.Context, name string, args []string, o
 		cmd.Dir = co.workingDir
 	}
 
-	// Apply per-call env vars.
+	// Apply per-call env vars (nop does not filter; see nopManager doc).
 	if len(co.env) > 0 {
 		cmd.Env = append(cmd.Environ(), co.env...)
 	}

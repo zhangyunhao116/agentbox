@@ -119,13 +119,13 @@ func TestSeccompBlocksSpecialFiles(t *testing.T) {
 // instructions for each architecture.
 func TestBuildSeccompFilterLength(t *testing.T) {
 	tests := []struct {
-		arch        string
-		wantBlocked int // number of unconditionally blocked syscalls
-		hasMknod    bool
-		hasMknodat  bool
+		arch    string
+		wantLen int // total BPF instructions: 4 (header) + n (blocked) + 6 (tail)
 	}{
-		{"amd64", 6, true, true},  // ptrace,mount,umount2,reboot,swapon,swapoff + mknod,mknodat
-		{"arm64", 6, false, true}, // ptrace,mount,umount2,reboot,swapon,swapoff + mknodat (no mknod)
+		// amd64: 30 unconditional + 4 arch-specific (mknod, mknodat, ioperm, iopl) = 34 blocked → 44 total
+		{"amd64", 44},
+		// arm64: 30 unconditional + 1 arch-specific (mknodat only) = 31 blocked → 41 total
+		{"arm64", 41},
 	}
 
 	for _, tt := range tests {
@@ -137,18 +137,8 @@ func TestBuildSeccompFilterLength(t *testing.T) {
 
 			filter := buildSeccompFilter(sc)
 
-			// Count expected: base 6 + conditional mknod/mknodat
-			n := tt.wantBlocked
-			if tt.hasMknod {
-				n++
-			}
-			if tt.hasMknodat {
-				n++
-			}
-			// Total = 4 (header) + n (blocked checks) + 6 (tail)
-			wantLen := 4 + n + 6
-			if len(filter) != wantLen {
-				t.Errorf("filter length = %d, want %d (blocked=%d)", len(filter), wantLen, n)
+			if len(filter) != tt.wantLen {
+				t.Errorf("filter length = %d, want %d", len(filter), tt.wantLen)
 			}
 		})
 	}

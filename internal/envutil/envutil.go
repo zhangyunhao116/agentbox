@@ -102,3 +102,111 @@ func MergeEnv(base, additional []string) []string {
 
 	return result
 }
+
+// sensitiveExactKeys is the set of environment variable names that are
+// unconditionally removed by SanitizeEnv.
+var sensitiveExactKeys = map[string]bool{
+	"LD_PRELOAD":         true,
+	"LD_LIBRARY_PATH":    true,
+	"AWS_SECRET_ACCESS_KEY": true,
+	"AWS_SESSION_TOKEN":  true,
+	"GITHUB_TOKEN":       true,
+	"GH_TOKEN":           true,
+	"GITHUB_PAT":         true,
+	"DOCKER_AUTH_CONFIG":  true,
+	"NPM_TOKEN":          true,
+}
+
+// sensitiveSuffixes lists the upper-case suffixes that cause a variable to be
+// removed by SanitizeEnv. Matching is case-insensitive on the key.
+var sensitiveSuffixes = []string{
+	"_SECRET",
+	"_PASSWORD",
+	"_API_KEY",
+	"_PRIVATE_KEY",
+	"_TOKEN",
+}
+
+// SanitizeConfig configures environment variable sanitization.
+type SanitizeConfig struct {
+	// ExactKeys are exact env var names to remove (case-sensitive match).
+	ExactKeys []string
+	// Suffixes are case-insensitive suffixes to match against env var keys.
+	Suffixes []string
+	// Preserve is a set of keys that should never be removed, even if they
+	// match an exact key or suffix pattern.
+	Preserve []string
+}
+
+// DefaultSanitizeConfig returns the default sanitization configuration.
+func DefaultSanitizeConfig() SanitizeConfig {
+	exact := make([]string, 0, len(sensitiveExactKeys))
+	for k := range sensitiveExactKeys {
+		exact = append(exact, k)
+	}
+	return SanitizeConfig{
+		ExactKeys: exact,
+		Suffixes:  append([]string(nil), sensitiveSuffixes...),
+	}
+}
+
+// SanitizeEnv removes sensitive and dangerous environment variables from env.
+// It strips exact-match keys (e.g. LD_PRELOAD, AWS_SECRET_ACCESS_KEY) and keys
+// ending with known sensitive suffixes (e.g. _SECRET, _PASSWORD). The internal
+// _AGENTBOX_CONFIG variable is always preserved.
+func SanitizeEnv(env []string) []string {
+	return SanitizeEnvWith(env, DefaultSanitizeConfig())
+}
+
+// SanitizeEnvWith filters env using the provided config. The internal
+// _AGENTBOX_CONFIG variable is always preserved regardless of config.
+func SanitizeEnvWith(env []string, cfg SanitizeConfig) []string {
+	// Build lookup structures for efficient matching.
+	exactSet := make(map[string]bool, len(cfg.ExactKeys))
+	for _, k := range cfg.ExactKeys {
+		exactSet[k] = true
+	}
+	preserveSet := make(map[string]bool, len(cfg.Preserve))
+	for _, k := range cfg.Preserve {
+		preserveSet[k] = true
+	}
+
+	result := make([]string, 0, len(env))
+	for _, e := range env {
+		key := e
+		if idx := strings.IndexByte(e, '='); idx >= 0 {
+			key = e[:idx]
+		}
+
+		// Always preserve the internal config variable.
+		if key == "_AGENTBOX_CONFIG" {
+			result = append(result, e)
+			continue
+		}
+
+		// Honor explicit preserve list.
+		if preserveSet[key] {
+			result = append(result, e)
+			continue
+		}
+
+		if exactSet[key] {
+			continue
+		}
+
+		upper := strings.ToUpper(key)
+		blocked := false
+		for _, suffix := range cfg.Suffixes {
+			if strings.HasSuffix(upper, suffix) {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+
+		result = append(result, e)
+	}
+	return result
+}
