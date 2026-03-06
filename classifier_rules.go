@@ -175,6 +175,8 @@ func forbiddenRules() []rule {
 		chownRecursiveRootRule(),
 		filesystemFormatRule(),
 		curlPipeShellRule(),
+		base64PipeShellRule(),
+		ifsBypassRule(),
 	}
 }
 
@@ -829,6 +831,150 @@ func curlPipeShellRule() rule {
 			return ClassifyResult{}, false
 		},
 	}
+}
+
+// segmentHasBase64Decode checks whether a pipe segment contains a base64
+// command with a decode flag (-d, --decode, or combined short flags like -di).
+// It tokenizes the segment so that extra flags between "base64" and "-d" are
+// handled correctly (e.g. "base64 -w 0 -d").
+func segmentHasBase64Decode(segLower string) bool {
+	fields := strings.Fields(segLower)
+	if len(fields) == 0 {
+		return false
+	}
+	cmd := fields[0]
+	if cmd != "base64" && !strings.HasSuffix(cmd, "/base64") {
+		return false
+	}
+	for _, arg := range fields[1:] {
+		if arg == "-d" || arg == "--decode" {
+			return true
+		}
+		// Handle combined short flags like -di, -wd, etc.
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.Contains(arg, "d") {
+			return true
+		}
+	}
+	return false
+}
+
+// base64PipeShells lists the shell interpreters that matchBase64PipeShell
+// considers dangerous when receiving piped base64-decoded output.
+var base64PipeShells = []string{"sh", "bash", "zsh", "dash", "ksh", "eval"}
+
+// matchBase64PipeShell returns a Forbidden result if the command pipes
+// base64-decoded output to a shell interpreter.
+func matchBase64PipeShell(command string) (ClassifyResult, bool) {
+	lower := strings.ToLower(command)
+	// Must contain base64 with a decode flag.
+	if !strings.Contains(lower, "base64") {
+		return ClassifyResult{}, false
+	}
+	if !strings.Contains(command, "|") {
+		return ClassifyResult{}, false
+	}
+	// Walk pipe segments: find the segment with base64 decode,
+	// then check if any subsequent segment is a shell.
+	parts := strings.Split(command, "|")
+	decodeSeen := false
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		partLower := strings.ToLower(trimmed)
+		if segmentHasBase64Decode(partLower) {
+			decodeSeen = true
+			continue
+		}
+		if decodeSeen {
+			fields := strings.Fields(trimmed)
+			if len(fields) == 0 {
+				continue
+			}
+			target := strings.ToLower(baseCommand(fields[0]))
+			for _, sh := range base64PipeShells {
+				if target == sh {
+					return ClassifyResult{
+						Decision: Forbidden,
+						Reason:   "piping base64-decoded content to a shell is dangerous",
+						Rule:     "base64-pipe-shell",
+					}, true
+				}
+			}
+		}
+	}
+	return ClassifyResult{}, false
+}
+
+// base64PipeShellRule detects base64 decode output piped to a shell.
+// Attackers encode malicious payloads as base64 strings and pipe the decoded
+// output to a shell interpreter to bypass command-string classifiers.
+// Examples: echo "cm0gLXJmIC8=" | base64 -d | sh
+//
+//	base64 --decode payload.txt | bash
+func base64PipeShellRule() rule {
+	return rule{
+		Name:  "base64-pipe-shell",
+		Match: matchBase64PipeShell,
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			// Pipes are shell constructs; reconstruct and delegate.
+			full := name + " " + strings.Join(args, " ")
+			return matchBase64PipeShell(full)
+		},
+	}
+}
+
+// ifsBypassRule detects $IFS used as a word-splitting bypass in commands.
+// Attackers use $IFS (Internal Field Separator) to replace spaces and evade
+// simple string matching. For example: cat$IFS/etc/passwd, rm$IFS-rf$IFS/
+// Legitimate uses of $IFS (e.g. "echo $IFS") are not flagged because the
+// variable appears as a standalone token rather than concatenated with a command.
+func ifsBypassRule() rule {
+	return rule{
+		Name:  "ifs-bypass",
+		Match: matchIFSBypass,
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			full := name + " " + strings.Join(args, " ")
+			return matchIFSBypass(full)
+		},
+	}
+}
+
+// isIFSSeparator returns true if c is a character that would naturally
+// separate a $IFS token from adjacent text.
+func isIFSSeparator(c byte) bool {
+	return c == ' ' || c == '\t' || c == '|' || c == ';' || c == '"' || c == '\'' || c == '\n'
+}
+
+// matchIFSBypass returns a Forbidden result if the command contains $IFS or
+// ${IFS} concatenated with adjacent text (i.e., used as a word-splitting
+// bypass). A standalone "$IFS" token (like "echo $IFS") is not flagged.
+func matchIFSBypass(command string) (ClassifyResult, bool) {
+	// Check for both $IFS and ${IFS} forms.
+	for _, marker := range []string{"${IFS}", "$IFS"} {
+		idx := strings.Index(command, marker)
+		if idx < 0 {
+			continue
+		}
+		// Walk all occurrences.
+		for idx >= 0 {
+			before := idx > 0 && !isIFSSeparator(command[idx-1])
+			end := idx + len(marker)
+			after := end < len(command) && !isIFSSeparator(command[end])
+			if before || after {
+				return ClassifyResult{
+					Decision: Forbidden,
+					Reason:   "$IFS word-splitting bypass detected",
+					Rule:     "ifs-bypass",
+				}, true
+			}
+			// Search for next occurrence after current.
+			next := strings.Index(command[end:], marker)
+			if next < 0 {
+				break
+			}
+			idx = end + next
+		}
+	}
+	return ClassifyResult{}, false
 }
 
 // ---------------------------------------------------------------------------

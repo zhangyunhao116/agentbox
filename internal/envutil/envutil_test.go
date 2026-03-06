@@ -298,3 +298,233 @@ func assertSliceEqual(t *testing.T, got, want []string) {
 		}
 	}
 }
+
+func TestSanitizeEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		env  []string
+		want []string
+	}{
+		{
+			name: "removes LD_PRELOAD",
+			env:  []string{"PATH=/usr/bin", "LD_PRELOAD=/evil.so", "HOME=/home/user"},
+			want: []string{"PATH=/usr/bin", "HOME=/home/user"},
+		},
+		{
+			name: "removes LD_LIBRARY_PATH",
+			env:  []string{"LD_LIBRARY_PATH=/lib", "HOME=/home"},
+			want: []string{"HOME=/home"},
+		},
+		{
+			name: "removes AWS_SECRET_ACCESS_KEY",
+			env:  []string{"AWS_SECRET_ACCESS_KEY=secret", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "removes AWS_SESSION_TOKEN",
+			env:  []string{"AWS_SESSION_TOKEN=tok", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "removes GITHUB_TOKEN",
+			env:  []string{"GITHUB_TOKEN=ghp_abc", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "removes GH_TOKEN",
+			env:  []string{"GH_TOKEN=ghp_abc", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "removes GITHUB_PAT",
+			env:  []string{"GITHUB_PAT=ghp_abc", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "removes DOCKER_AUTH_CONFIG",
+			env:  []string{"DOCKER_AUTH_CONFIG={}", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "removes NPM_TOKEN",
+			env:  []string{"NPM_TOKEN=abc", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "removes _SECRET suffix",
+			env:  []string{"MY_SECRET=foo", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "removes _PASSWORD suffix",
+			env:  []string{"DB_PASSWORD=pass", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "removes _API_KEY suffix",
+			env:  []string{"OPENAI_API_KEY=sk-abc", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "removes _PRIVATE_KEY suffix",
+			env:  []string{"SSH_PRIVATE_KEY=-----BEGIN", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "removes _TOKEN suffix",
+			env:  []string{"SLACK_TOKEN=xoxb-abc", "CUSTOM_TOKEN=xxx", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "suffix match is case-insensitive",
+			env:  []string{"my_secret=foo", "db_password=bar", "PATH=/bin"},
+			want: []string{"PATH=/bin"},
+		},
+		{
+			name: "preserves _AGENTBOX_CONFIG",
+			env:  []string{"_AGENTBOX_CONFIG=3", "LD_PRELOAD=/evil.so"},
+			want: []string{"_AGENTBOX_CONFIG=3"},
+		},
+		{
+			name: "preserves safe variables",
+			env:  []string{"PATH=/bin", "HOME=/home", "TERM=xterm", "LANG=en_US.UTF-8"},
+			want: []string{"PATH=/bin", "HOME=/home", "TERM=xterm", "LANG=en_US.UTF-8"},
+		},
+		{
+			name: "removes multiple sensitive vars at once",
+			env: []string{
+				"PATH=/bin",
+				"LD_PRELOAD=/evil.so",
+				"GITHUB_TOKEN=tok",
+				"MY_SECRET=s",
+				"HOME=/home",
+				"DB_PASSWORD=p",
+			},
+			want: []string{"PATH=/bin", "HOME=/home"},
+		},
+		{
+			name: "nil input",
+			env:  nil,
+			want: []string{},
+		},
+		{
+			name: "empty input",
+			env:  []string{},
+			want: []string{},
+		},
+		{
+			name: "entry without equals sign",
+			env:  []string{"NOEQUALS"},
+			want: []string{"NOEQUALS"},
+		},
+		{
+			name: "entry without equals sign but sensitive key",
+			env:  []string{"LD_PRELOAD"},
+			want: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeEnv(tt.env)
+			assertSliceEqual(t, got, tt.want)
+		})
+	}
+}
+
+func TestSanitizeEnvWith(t *testing.T) {
+	tests := []struct {
+		name string
+		env  []string
+		cfg  SanitizeConfig
+		want []string
+	}{
+		{
+			name: "custom exact keys only",
+			env:  []string{"FOO=1", "BAR=2", "BAZ=3"},
+			cfg: SanitizeConfig{
+				ExactKeys: []string{"BAR"},
+			},
+			want: []string{"FOO=1", "BAZ=3"},
+		},
+		{
+			name: "custom suffixes only",
+			env:  []string{"PATH=/bin", "MY_CREDENTIAL=x", "HOME=/home"},
+			cfg: SanitizeConfig{
+				Suffixes: []string{"_CREDENTIAL"},
+			},
+			want: []string{"PATH=/bin", "HOME=/home"},
+		},
+		{
+			name: "preserve overrides exact key",
+			env:  []string{"LD_PRELOAD=/lib.so", "PATH=/bin"},
+			cfg: SanitizeConfig{
+				ExactKeys: []string{"LD_PRELOAD"},
+				Preserve:  []string{"LD_PRELOAD"},
+			},
+			want: []string{"LD_PRELOAD=/lib.so", "PATH=/bin"},
+		},
+		{
+			name: "preserve overrides suffix match",
+			env:  []string{"MY_SECRET=s", "SAFE=ok"},
+			cfg: SanitizeConfig{
+				Suffixes: []string{"_SECRET"},
+				Preserve: []string{"MY_SECRET"},
+			},
+			want: []string{"MY_SECRET=s", "SAFE=ok"},
+		},
+		{
+			name: "agentbox config always preserved",
+			env:  []string{"_AGENTBOX_CONFIG=cfg", "BAD=1"},
+			cfg: SanitizeConfig{
+				ExactKeys: []string{"_AGENTBOX_CONFIG", "BAD"},
+			},
+			want: []string{"_AGENTBOX_CONFIG=cfg"},
+		},
+		{
+			name: "empty config removes nothing",
+			env:  []string{"A=1", "B=2"},
+			cfg:  SanitizeConfig{},
+			want: []string{"A=1", "B=2"},
+		},
+		{
+			name: "nil input",
+			env:  nil,
+			cfg:  SanitizeConfig{ExactKeys: []string{"X"}},
+			want: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeEnvWith(tt.env, tt.cfg)
+			assertSliceEqual(t, got, tt.want)
+		})
+	}
+}
+
+func TestDefaultSanitizeConfig(t *testing.T) {
+	cfg := DefaultSanitizeConfig()
+
+	// Must contain at least the well-known exact keys.
+	exactSet := make(map[string]bool, len(cfg.ExactKeys))
+	for _, k := range cfg.ExactKeys {
+		exactSet[k] = true
+	}
+	for _, want := range []string{"LD_PRELOAD", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN"} {
+		if !exactSet[want] {
+			t.Errorf("DefaultSanitizeConfig().ExactKeys missing %q", want)
+		}
+	}
+
+	// Must contain at least the known suffixes.
+	if len(cfg.Suffixes) == 0 {
+		t.Error("DefaultSanitizeConfig().Suffixes is empty")
+	}
+
+	// SanitizeEnv and SanitizeEnvWith with defaults should produce identical results.
+	env := []string{"PATH=/bin", "LD_PRELOAD=/evil.so", "MY_SECRET=x", "HOME=/home"}
+	got1 := SanitizeEnv(env)
+	got2 := SanitizeEnvWith(env, cfg)
+	assertSliceEqual(t, got1, got2)
+}

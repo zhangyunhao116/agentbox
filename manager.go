@@ -173,6 +173,8 @@ func mergeCallOptions(opts ...Option) *callOptions {
 // configSnapshot holds a shallow copy of Config taken under the read lock.
 // Fields that are pointers/slices are safe because UpdateConfig deep-copies
 // them before storing, so the snapshot references the old (immutable) data.
+// See UpdateConfig's call to deepCopyConfig which copies WritableRoots,
+// DenyWrite, DenyRead, AllowedDomains, and DeniedDomains slices.
 type configSnapshot struct {
 	cfg Config
 }

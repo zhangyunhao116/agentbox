@@ -345,12 +345,14 @@ func TestApplyLandlock_SystemPaths(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// System paths that exist should be in the opened paths.
-	expectedPaths := []string{"/usr", "/lib", "/etc", "/bin", "/sbin", "/proc", "/dev"}
+	// Representative subset of the granular system paths that should be opened.
+	expectedPaths := []string{
+		"/usr", "/lib", "/bin", "/sbin",
+		"/etc/resolv.conf", "/etc/hosts", "/etc/ssl",
+		"/proc/self/status", "/proc/self/exe",
+		"/dev/null", "/dev/urandom",
+	}
 	for _, ep := range expectedPaths {
-		if _, err := os.Stat(ep); err != nil {
-			continue // Path doesn't exist on this system.
-		}
 		found := false
 		for _, p := range openedPaths {
 			if p == ep {
@@ -415,8 +417,14 @@ func TestApplyLandlock_StatFails(t *testing.T) {
 	}
 
 	// No system paths should have been opened since stat failed for all.
-	systemPaths := []string{"/usr", "/lib", "/lib64", "/etc", "/bin", "/sbin", "/proc", "/dev"}
-	for _, sp := range systemPaths {
+	// Check a representative subset of the granular paths.
+	shouldNotOpen := []string{
+		"/usr", "/lib", "/lib64", "/bin", "/sbin",
+		"/etc/ld.so.cache", "/etc/resolv.conf", "/etc/hosts",
+		"/proc/self/status", "/proc/self/fd",
+		"/dev/null", "/dev/zero", "/dev/urandom",
+	}
+	for _, sp := range shouldNotOpen {
 		for _, p := range openedPaths {
 			if p == sp {
 				t.Errorf("system path %q should not have been opened when stat fails", sp)

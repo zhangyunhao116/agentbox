@@ -17,11 +17,13 @@ import (
 func configureNamespaces(cmd *exec.Cmd, cfg *platform.WrapConfig) {
 	// CLONE_NEWIPC (0x08000000) isolates System V IPC.
 	// CLONE_NEWUTS (0x04000000) isolates hostname.
+	// CLONE_NEWCGROUP (0x02000000) isolates cgroup namespace.
 	const (
-		cloneNewIPC = 0x08000000
-		cloneNewUTS = 0x04000000
+		cloneNewIPC    = 0x08000000
+		cloneNewUTS    = 0x04000000
+		cloneNewCgroup = 0x02000000
 	)
-	flags := syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | cloneNewIPC | cloneNewUTS
+	flags := syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | cloneNewIPC | cloneNewUTS | cloneNewCgroup
 	if cfg.NeedsNetworkRestriction {
 		flags |= syscall.CLONE_NEWNET
 	}

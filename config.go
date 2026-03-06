@@ -203,6 +203,11 @@ func DefaultConfig() *Config {
 				"/usr",
 				"/bin",
 				"/sbin",
+				"/lib",
+				"/lib64",
+				"/boot",
+				"/opt",
+				"/sys",
 			},
 			DenyRead: []string{
 				filepath.Join(home, ".ssh"),

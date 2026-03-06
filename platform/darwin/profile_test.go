@@ -817,12 +817,15 @@ func TestBuildNetworkNoProxyPorts(t *testing.T) {
 		t.Fatalf("Build() error: %v", err)
 	}
 
-	// With no proxy ports, should still deny network and allow local UDP.
+	// With no proxy ports, should still deny network and allow DNS/mDNS UDP only.
 	if !strings.Contains(profile, "(deny network*)") {
 		t.Error("profile missing (deny network*)")
 	}
-	if !strings.Contains(profile, `(allow network* (local udp "*:*"))`) {
-		t.Error("profile missing local UDP allow rule")
+	if !strings.Contains(profile, `(allow network* (remote udp "localhost:53"))`) {
+		t.Error("profile missing DNS UDP allow rule (port 53)")
+	}
+	if !strings.Contains(profile, `(allow network* (remote udp "localhost:5353"))`) {
+		t.Error("profile missing mDNS UDP allow rule (port 5353)")
 	}
 
 	// Should NOT have any localhost TCP rules.

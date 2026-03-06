@@ -71,6 +71,11 @@ func TestConfigureNamespaces_DefaultFlags(t *testing.T) {
 	if flags&cloneNewUTS == 0 {
 		t.Error("CLONE_NEWUTS not set")
 	}
+	// Cgroup namespace should be set by default.
+	const cloneNewCgroup = 0x02000000
+	if flags&cloneNewCgroup == 0 {
+		t.Error("CLONE_NEWCGROUP not set")
+	}
 	// Network namespace should NOT be set by default.
 	if flags&syscall.CLONE_NEWNET != 0 {
 		t.Error("CLONE_NEWNET should not be set by default")

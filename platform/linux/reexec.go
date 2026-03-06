@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/zhangyunhao116/agentbox/internal/envutil"
 	"github.com/zhangyunhao116/agentbox/platform"
 )
 
@@ -125,7 +126,7 @@ func sandboxInit(fdStr string) int {
 	// Clear the re-exec env var so the child doesn't re-enter init.
 	_ = os.Unsetenv(reExecEnvKey)
 
-	if err := syscallExecFn(args[0], args, os.Environ()); err != nil {
+	if err := syscallExecFn(args[0], args, envutil.SanitizeEnv(os.Environ())); err != nil {
 		fmt.Fprintf(os.Stderr, "agentbox: exec %s: %v\n", args[0], err)
 		return 1
 	}

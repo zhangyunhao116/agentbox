@@ -1806,3 +1806,216 @@ func TestIsDangerousTarget(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Base64 pipe to shell detection
+// ---------------------------------------------------------------------------
+
+func TestClassifierBase64PipeShell(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		// Should be flagged as Forbidden.
+		{"base64 -d pipe sh", `echo "cm0gLXJmIC8=" | base64 -d | sh`, Forbidden},
+		{"base64 --decode pipe bash", "base64 --decode payload.txt | bash", Forbidden},
+		{"base64 -d pipe zsh", "cat encoded.txt | base64 -d | zsh", Forbidden},
+		{"base64 -d pipe dash", "echo payload | base64 -d | dash", Forbidden},
+		{"base64 -d pipe ksh", "echo payload | base64 -d | ksh", Forbidden},
+		{"base64 -d pipe eval", "echo payload | base64 -d | eval", Forbidden},
+		{"base64 -d full path shell", "echo enc | base64 -d | /bin/bash", Forbidden},
+		{"base64 uppercase decode flag", "echo enc | BASE64 -D | sh", Forbidden},
+		{"base64 -w 0 -d extra flags", "echo enc | base64 -w 0 -d | sh", Forbidden},
+		{"base64 -di combined flags", "echo enc | base64 -di | bash", Forbidden},
+
+		// Should NOT be flagged.
+		{"base64 decode no pipe", "base64 -d readme.txt", Sandboxed},
+		{"base64 encode pipe", "echo test | base64", Allow},
+		{"base64 encode no decode flag", "echo test | base64 | cat", Allow},
+		{"base64 -d pipe grep", "echo enc | base64 -d | grep hello", Allow},
+		{"no base64 at all", "echo hello | sh", Allow},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (%s), want %v", tt.cmd, r.Decision, r.Reason, tt.want)
+			}
+			if r.Decision == Forbidden && r.Rule != "base64-pipe-shell" {
+				t.Errorf("expected rule base64-pipe-shell, got %q", r.Rule)
+			}
+		})
+	}
+}
+
+func TestClassifierBase64PipeShellArgs(t *testing.T) {
+	c := DefaultClassifier()
+	// MatchArgs receives the command split into name + args. Pipes are
+	// shell constructs so they appear in the joined string.
+	tests := []struct {
+		name string
+		bin  string
+		args []string
+		want Decision
+	}{
+		{
+			"base64 -d pipe sh via args",
+			"echo",
+			[]string{"enc", "|", "base64", "-d", "|", "sh"},
+			Forbidden,
+		},
+		{
+			"base64 decode no pipe via args",
+			"base64",
+			[]string{"-d", "readme.txt"},
+			Sandboxed,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.ClassifyArgs(tt.bin, tt.args)
+			if r.Decision != tt.want {
+				t.Errorf("ClassifyArgs(%q, %v) = %v (%s), want %v",
+					tt.bin, tt.args, r.Decision, r.Reason, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// $IFS word-splitting bypass detection
+// ---------------------------------------------------------------------------
+
+func TestClassifierIFSBypass(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		// Should be flagged as Forbidden.
+		{"cat IFS /etc/passwd", "cat$IFS/etc/passwd", Forbidden},
+		{"rm IFS -rf", "rm$IFS-rf$IFS/", Forbidden},
+		{"braced IFS", "cat${IFS}/etc/passwd", Forbidden},
+		{"IFS mid-command", "ls$IFS-la", Forbidden},
+
+		// Should NOT be flagged (standalone $IFS is legitimate).
+		{"echo IFS standalone", "echo $IFS", Allow},
+		{"echo IFS with other args", "echo $IFS foo", Allow},
+		{"echo IFS double quoted", `echo "$IFS"`, Allow},
+		{"echo IFS single quoted", "echo '$IFS'", Allow},
+		{"IFS assignment", "IFS=: read -r a b c", Sandboxed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (%s), want %v", tt.cmd, r.Decision, r.Reason, tt.want)
+			}
+			if r.Decision == Forbidden && r.Rule != "ifs-bypass" {
+				t.Errorf("expected rule ifs-bypass, got %q", r.Rule)
+			}
+		})
+	}
+}
+
+func TestClassifierIFSBypassArgs(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		bin  string
+		args []string
+		want Decision
+	}{
+		{
+			"cat IFS via args",
+			"cat$IFS/etc/passwd",
+			nil,
+			Forbidden,
+		},
+		{
+			"echo IFS standalone via args",
+			"echo",
+			[]string{"$IFS"},
+			Allow,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.ClassifyArgs(tt.bin, tt.args)
+			if r.Decision != tt.want {
+				t.Errorf("ClassifyArgs(%q, %v) = %v (%s), want %v",
+					tt.bin, tt.args, r.Decision, r.Reason, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchIFSBypass(t *testing.T) {
+	tests := []struct {
+		cmd  string
+		want bool
+	}{
+		{"cat$IFS/etc/passwd", true},
+		{"rm$IFS-rf$IFS/", true},
+		{"cat${IFS}/etc/passwd", true},
+		{"echo $IFS", false},
+		{"echo $IFS foo", false},
+		{"$IFS", false},             // standalone at start
+		{"hello world", false},      // no IFS at all
+		{"echo$IFS", true},          // concatenated before
+		{"$IFScat", true},           // concatenated after
+		{"echo ${IFS}cat", true},    // braced form concatenated after
+		{`echo "$IFS"`, false},      // double-quoted standalone
+		{"echo '$IFS'", false},      // single-quoted standalone
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			_, got := matchIFSBypass(tt.cmd)
+			if got != tt.want {
+				t.Errorf("matchIFSBypass(%q) = %v, want %v", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsIFSSeparator(t *testing.T) {
+	separators := []byte{' ', '\t', '|', ';', '"', '\'', '\n'}
+	for _, c := range separators {
+		if !isIFSSeparator(c) {
+			t.Errorf("isIFSSeparator(%q) = false, want true", c)
+		}
+	}
+
+	nonSeparators := []byte{'a', 'Z', '0', '$', '/', '-', '_', '.'}
+	for _, c := range nonSeparators {
+		if isIFSSeparator(c) {
+			t.Errorf("isIFSSeparator(%q) = true, want false", c)
+		}
+	}
+}
+
+func TestMatchBase64PipeShell(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{"pipe to bash", "echo cm0gLXJmIC8= | base64 -d | bash", true},
+		{"pipe to sh", "base64 --decode payload.txt | sh", true},
+		{"no pipe", "base64 --decode payload.txt", false},
+		{"no base64", "echo hello | sh", false},
+		{"safe command", "echo hello", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, got := matchBase64PipeShell(tt.cmd)
+			if got != tt.want {
+				t.Errorf("matchBase64PipeShell(%q) = %v, want %v", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}

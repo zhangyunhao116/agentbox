@@ -10,7 +10,10 @@ Process-level sandbox isolation library for AI agents and CI/CD systems. Zero ex
 > |-----------|--------|
 > | **macOS (Seatbelt)** | ✅ Tested and stable |
 > | **Linux (Namespace + Landlock)** | ✅ Tested (beta) |
+> | **Windows (WSL2)** | 📋 Designed — see [design/06-windows-wsl-sandbox.md](./design/06-windows-wsl-sandbox.md) |
 > | **Go API** | ⚠️ Beta — expect breaking changes before v1.0 |
+>
+> **Windows Support:** Windows support is planned via WSL2 (Windows Subsystem for Linux 2), following the industry-standard approach used by Claude Code and OpenAI Codex. See the [design document](./design/06-windows-wsl-sandbox.md) for implementation details.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/zhangyunhao116/agentbox.svg)](https://pkg.go.dev/github.com/zhangyunhao116/agentbox)
 
@@ -198,15 +201,16 @@ Sandboxed processes are constrained by configurable resource limits:
 
 Platform-specific hardening is applied automatically:
 
-| Technique | macOS | Linux |
-|-----------|-------|-------|
-| Filesystem isolation | Seatbelt/SBPL profiles | User/Mount namespaces + Landlock |
-| Network isolation | SBPL rules + Proxy | `CLONE_NEWNET` + Proxy |
-| PID isolation | — | `CLONE_NEWPID` namespace |
-| Syscall filtering | — | Seccomp BPF |
-| Privilege escalation prevention | `PT_DENY_ATTACH` | `PR_SET_NO_NEW_PRIVS` |
-| Environment sanitization | `DYLD_*` variable removal | — |
-| Core dump prevention | Yes | Yes |
+| Technique | macOS | Linux | Windows (WSL2) |
+|-----------|-------|-------|----------------|
+| Filesystem isolation | Seatbelt/SBPL profiles | User/Mount namespaces + Landlock | Hyper-V VM + Landlock (inside WSL2) |
+| Network isolation | SBPL rules + Proxy | `CLONE_NEWNET` + Proxy | `CLONE_NEWNET` + Proxy (inside WSL2) |
+| PID isolation | — | `CLONE_NEWPID` namespace | `CLONE_NEWPID` (inside WSL2) |
+| Syscall filtering | — | Seccomp BPF | Seccomp BPF (inside WSL2) |
+| Privilege escalation prevention | `PT_DENY_ATTACH` | `PR_SET_NO_NEW_PRIVS` | `PR_SET_NO_NEW_PRIVS` (inside WSL2) |
+| Environment sanitization | `DYLD_*` variable removal | — | Windows env sanitization + WSL config |
+| Core dump prevention | Yes | Yes | Yes |
+| VM isolation | — | — | Hyper-V (WSL2) |
 
 ### Fallback Behavior
 

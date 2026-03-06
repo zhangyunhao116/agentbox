@@ -186,7 +186,24 @@ func applyLandlock(cfg *platform.WrapConfig) error {
 	}
 
 	// Allow read access to common system paths (skip DenyRead paths).
-	systemReadPaths := []string{"/usr", "/lib", "/lib64", "/etc", "/bin", "/sbin", "/proc", "/dev"}
+	// Use granular paths for /etc, /proc, and /dev rather than exposing
+	// everything under those directories.
+	systemReadPaths := []string{
+		// Executables and shared libraries.
+		"/usr", "/lib", "/lib64", "/bin", "/sbin",
+		// Granular /etc paths for linker, DNS, TLS, and identity.
+		"/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
+		"/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf",
+		"/etc/ssl", "/etc/ca-certificates", "/etc/pki",
+		"/etc/alternatives", "/etc/localtime", "/etc/timezone",
+		"/etc/passwd", "/etc/group",
+		// Granular /proc paths for process introspection.
+		"/proc/self/status", "/proc/self/fd", "/proc/self/exe", "/proc/self/maps",
+		// Granular /dev paths for standard I/O devices.
+		"/dev/null", "/dev/zero", "/dev/urandom", "/dev/random",
+		"/dev/stdin", "/dev/stdout", "/dev/stderr",
+		"/dev/fd", "/dev/pts", "/dev/shm",
+	}
 	for _, path := range systemReadPaths {
 		if denyReadSet[path] {
 			continue
