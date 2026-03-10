@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/zhangyunhao116/agentbox"
 )
@@ -29,6 +31,14 @@ func main() {
 	}
 }
 
+// shellQuote wraps s in single quotes, escaping any embedded single quotes.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func run() error {
 	ctx := context.Background()
 
@@ -39,6 +49,14 @@ func run() error {
 	}
 	defer os.RemoveAll(workdir)
 
+	// Create a Go cache directory inside the writable workdir so that
+	// sandboxed go commands can write build-cache artifacts without
+	// needing access to the user's home directory.
+	gocache := filepath.Join(workdir, ".cache")
+	if err := os.MkdirAll(gocache, 0o755); err != nil {
+		return fmt.Errorf("create cache dir: %w", err)
+	}
+
 	// Configure the sandbox: only the temp dir and /tmp are writable.
 	cfg := agentbox.DefaultConfig()
 	cfg.Filesystem.WritableRoots = []string{workdir, "/tmp"}
@@ -48,6 +66,10 @@ func run() error {
 		return fmt.Errorf("new manager: %w", err)
 	}
 	defer mgr.Cleanup(ctx)
+
+	// Prefix for sandboxed commands that invoke the Go toolchain,
+	// ensuring GOCACHE points inside the writable workdir.
+	envPrefix := fmt.Sprintf("export GOCACHE=%s && ", shellQuote(gocache))
 
 	// Step 1: Scaffold a minimal Go project inside the sandbox.
 	goMod := `module example.com/sandbox-demo
@@ -73,12 +95,13 @@ import (
 
 func TestMain_output(t *testing.T) {
 	cmd := exec.Command("go", "run", ".")
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("go run: %v", err)
+		t.Fatalf("go run: %v\nstderr: %s", err, stderr.String())
 	}
-	got := strings.TrimSpace(buf.String())
+	got := strings.TrimSpace(stdout.String())
 	if got != "built inside sandbox" {
 		t.Fatalf("unexpected output: %q", got)
 	}
@@ -86,12 +109,12 @@ func TestMain_output(t *testing.T) {
 `
 
 	scaffoldCmd := fmt.Sprintf(
-		"cat > %s/go.mod << 'GOMOD'\n%sGOMOD\n"+
-			"cat > %s/main.go << 'GOMAIN'\n%sGOMAIN\n"+
-			"cat > %s/main_test.go << 'GOTEST'\n%sGOTEST",
-		workdir, goMod,
-		workdir, goMain,
-		workdir, goTest,
+		"cat > %s << 'GOMOD'\n%sGOMOD\n"+
+			"cat > %s << 'GOMAIN'\n%sGOMAIN\n"+
+			"cat > %s << 'GOTEST'\n%sGOTEST",
+		shellQuote(filepath.Join(workdir, "go.mod")), goMod,
+		shellQuote(filepath.Join(workdir, "main.go")), goMain,
+		shellQuote(filepath.Join(workdir, "main_test.go")), goTest,
 	)
 
 	result, err := mgr.Exec(ctx, scaffoldCmd)
@@ -105,7 +128,7 @@ func TestMain_output(t *testing.T) {
 	}
 
 	// Step 2: Build the project.
-	result, err = mgr.Exec(ctx, fmt.Sprintf("cd %s && go build ./...", workdir))
+	result, err = mgr.Exec(ctx, envPrefix+fmt.Sprintf("cd %s && go build ./...", shellQuote(workdir)))
 	if err != nil {
 		return fmt.Errorf("go build: %w", err)
 	}
@@ -116,7 +139,7 @@ func TestMain_output(t *testing.T) {
 	}
 
 	// Step 3: Run tests.
-	result, err = mgr.Exec(ctx, fmt.Sprintf("cd %s && go test ./...", workdir))
+	result, err = mgr.Exec(ctx, envPrefix+fmt.Sprintf("cd %s && go test ./...", shellQuote(workdir)))
 	if err != nil {
 		return fmt.Errorf("go test: %w", err)
 	}
@@ -127,7 +150,7 @@ func TestMain_output(t *testing.T) {
 	}
 
 	// Step 4: Run vet.
-	result, err = mgr.Exec(ctx, fmt.Sprintf("cd %s && go vet ./...", workdir))
+	result, err = mgr.Exec(ctx, envPrefix+fmt.Sprintf("cd %s && go vet ./...", shellQuote(workdir)))
 	if err != nil {
 		return fmt.Errorf("go vet: %w", err)
 	}

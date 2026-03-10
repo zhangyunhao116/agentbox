@@ -16,13 +16,13 @@ This document describes the design for Windows sandbox support in agentbox, usin
 
 **Why WSL2?** Industry leaders have converged on WSL2 as the standard approach for sandbox isolation on Windows:
 
-| Product | Windows Sandbox Strategy | Linux Primitives Inside WSL2 |
-|---------|-------------------------|------------------------------|
-| **Claude Code** (Anthropic) | WSL2 only; WSL1 not supported | bubblewrap + namespaces + seccomp |
-| **OpenAI Codex** | WSL2 with fallback | Landlock v3 + seccomp + user namespaces |
+| Product | Windows Sandbox Strategy | Linux Sandbox Primitives |
+|---------|-------------------------|--------------------------| 
+| **Claude Code** (Anthropic) | ❌ No sandbox (runs unconfined on Windows) | bubblewrap + namespaces + seccomp (Linux/macOS only) |
+| **OpenAI Codex** | Native Windows (Restricted Tokens + ACLs), experimental | Landlock v3 + seccomp (Linux only) |
 | **Cursor IDE** | WSL2 recommended | Permission-based (no sandbox) |
 
-> **Industry Research (2025-2026):** Claude Code's sandbox runtime is now [open source](https://github.com/anthropic-experimental/sandbox-runtime) and provides a proven reference implementation. Their approach uses WSL2 as the VM boundary, then bubblewrap for filesystem/network isolation inside WSL2. This validates agentbox's two-tier architecture design.
+> **Industry Research (2025-2026):** Claude Code's sandbox runtime is now [open source](https://github.com/anthropic-experimental/sandbox-runtime), supporting macOS (seatbelt) and Linux (bubblewrap + namespaces + seccomp) but **not Windows**. OpenAI Codex takes a different approach with native Windows security primitives (Restricted Tokens + ACLs), though still marked as "highly experimental." This gap validates agentbox's WSL2-based approach as a novel, stronger alternative for Windows sandbox isolation.
 >
 > **OWASP Agentic Top 10 (2026):** Sandboxing directly addresses **ASI05: Unexpected Code Execution**, ranked among the top security risks for agentic AI applications. The report emphasizes "least agency" — granting agents only the minimum autonomy required for safe, bounded tasks.
 >
@@ -41,9 +41,9 @@ WSL2 provides a real Linux kernel (5.15+) in a lightweight Hyper-V VM with full 
 
 **Key Insights from Industry Research:**
 
-1. **Claude Code** (Anthropic) uses WSL2 + bubblewrap — their [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) is now open source and serves as a reference implementation.
+1. **Claude Code** (Anthropic) provides a [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) for Linux/macOS, but **has no Windows sandbox implementation** — Windows runs unconfined.
 
-2. **OpenAI Codex** uses Landlock + seccomp directly, but has compatibility issues on some WSL2 configurations (see [openai/codex#1039](https://github.com/openai/codex/issues/1039)).
+2. **OpenAI Codex** takes a **native Windows sandbox approach** using Restricted Tokens + ACLs (see [codex-rs/windows-sandbox-rs](https://github.com/openai/codex/tree/main/codex-rs/windows-sandbox-rs)), though it remains experimental with known issues.
 
 3. **Cursor IDE** relies on WSL2 for Linux tool compatibility but does not implement OS-level sandboxing — they use permission-based security which has had vulnerabilities (CVE-2025-54135).
 
@@ -310,6 +310,83 @@ func (p *Platform) Unregister(ctx context.Context) error {
     return exec.CommandContext(ctx, p.wslPath, "--unregister", p.distroName).Run()
 }
 ```
+
+### 3.4 Distro Health Check and Recovery
+
+Over time a sandbox distro can become corrupted or unusable. `distro.go`'s
+`ensureDistro()` must integrate a health-check gate before every first use in a
+session.
+
+**Corruption detection — three-stage probe:**
+
+| Stage | Method | Detects |
+|-------|--------|---------|
+| 1. Registry | `wsl -l -q` lists distro name | Missing / unregistered distro |
+| 2. Command | `wsl -d <distro> -- /bin/true` exits 0 | Kernel panic, init crash, broken rootfs |
+| 3. Filesystem | `wsl -d <distro> -- touch /tmp/.agentbox-probe && rm /tmp/.agentbox-probe` | Read-only FS, full disk, VHD corruption |
+
+**Common corruption causes:**
+
+- **Power loss / forced shutdown** during a write to the ext4 VHD.
+- **Disk full** on the Windows host — the sparse VHD cannot grow.
+- **WSL update failures** that leave the distro in a half-upgraded state.
+- **Sparse VHD bugs** in older WSL2 builds (pre-2.0.0) causing metadata inconsistencies.
+
+**Atomic recovery flow:**
+
+Recovery is destructive (loses all in-distro state) but the sandbox distro is
+ephemeral by design, so re-provisioning is always safe.
+
+```go
+// healthCheckAndRecover runs the three-stage probe and, on failure,
+// atomically re-provisions the distro. It is called from ensureDistro().
+func (p *Platform) healthCheckAndRecover(ctx context.Context) error {
+    // Acquire per-user file lock to prevent concurrent recovery.
+    unlock, err := acquireDistroLock(p.lockPath)
+    if err != nil {
+        return fmt.Errorf("cannot acquire distro lock: %w", err)
+    }
+    defer unlock()
+
+    // Stage 1: registry check.
+    if !p.distroExists() {
+        return p.provision(ctx) // Fast path: distro was never created.
+    }
+
+    // Stage 2: command execution check.
+    probe := exec.CommandContext(ctx, p.wslPath,
+        "-d", p.distroName, "--", "/bin/true")
+    if err := probe.Run(); err != nil {
+        log.Printf("distro probe failed (stage 2): %v — recovering", err)
+        return p.reprovision(ctx)
+    }
+
+    // Stage 3: filesystem writability check.
+    fsProbe := exec.CommandContext(ctx, p.wslPath,
+        "-d", p.distroName, "--",
+        "sh", "-c", "touch /tmp/.agentbox-probe && rm /tmp/.agentbox-probe")
+    if err := fsProbe.Run(); err != nil {
+        log.Printf("distro probe failed (stage 3): %v — recovering", err)
+        return p.reprovision(ctx)
+    }
+
+    return nil
+}
+
+// reprovision unregisters and re-provisions the distro. Idempotent.
+func (p *Platform) reprovision(ctx context.Context) error {
+    _ = exec.CommandContext(ctx, p.wslPath,
+        "--unregister", p.distroName).Run() // ignore error: may already be gone
+    return p.provision(ctx)
+}
+```
+
+**File lock**: `acquireDistroLock` creates a lock file at
+`%LOCALAPPDATA%\agentbox\distro.lock` using `LockFileEx` (Windows) to serialize
+concurrent recovery attempts from multiple agentbox processes.
+
+**Integration point**: `ensureDistro()` (§3.3) calls `healthCheckAndRecover()`
+on every first invocation per `Platform` instance (guarded by `sync.Once`).
 
 ---
 
@@ -595,6 +672,59 @@ func applyLandlock(cfg *HelperConfig) error {
 
 **Graceful degradation**: If Landlock is not available (unlikely on modern WSL2 kernels), the helper logs a warning and relies on mount namespace isolation alone.
 
+### 5.4 Cross-Filesystem Performance Considerations
+
+WSL2 uses the 9P/Plan9 protocol to bridge the Windows (NTFS) and Linux (ext4)
+filesystems. This bridge introduces significant overhead that directly impacts
+sandbox performance.
+
+**Measured performance (9P vs native ext4 inside WSL2):**
+
+| Operation | Cross-FS performance (% of native) | Notes |
+|-----------|-------------------------------------|-------|
+| Sequential read | 10–18% | Tolerable for small config files |
+| Sequential write | 0.6–8% | Very slow for build artifacts |
+| Random read | 3–12% | Database-like workloads suffer |
+| Random write | **< 1%** | Worst case — essentially unusable |
+| `git status` / `git diff` | **5–10%** (10–20× slower) | Tree-walking is metadata-heavy |
+
+*Source: webbertakken WSL2 filesystem benchmarks.*
+
+**VirtioFS alternative:**
+
+Windows 11 Insider builds (and WSL 2.4+) offer VirtioFS as an experimental
+replacement for 9P. VirtioFS is 2–5× faster across most operations but is not
+yet available on stable Windows channels. Configuration in `.wslconfig`:
+
+```ini
+[wsl2]
+; Requires Windows 11 Insider + WSL 2.4+
+virtioFS = true
+```
+
+**Best practices for sandbox performance:**
+
+1. **Keep working files on WSL native filesystem.** The sandbox copies command
+   inputs into `/home/sandbox/` inside the distro (ext4) before execution and
+   copies outputs back afterward. This avoids cross-FS penalties during the
+   actual command run.
+2. **Enable sparse VHD.** Add to `.wslconfig`:
+   ```ini
+   [experimental]
+   sparseVhd = true
+   ```
+   This prevents the VHD from growing monotonically and reduces Windows-side
+   disk pressure (which indirectly reduces 9P stalls caused by host-side I/O
+   contention).
+3. **Windows Defender real-time scanning** imposes an additional **30–50%**
+   reduction in file operation throughput when accessing `\\wsl$\` or
+   `\\wsl.localhost\` paths. See **Appendix F** for recommended Defender
+   exclusion configuration.
+4. **Performance validation.** During integration testing, include a cross-FS
+   throughput benchmark (sequential write of 100 MB file from `/mnt/c/` vs
+   `/home/`) to catch regressions. Fail the test if cross-FS throughput drops
+   below 5% of native — this would indicate a broken 9P channel.
+
 ---
 
 ## 6. Network Isolation
@@ -616,8 +746,8 @@ When `NetworkFiltered` is configured, the existing `proxy/` package runs a filte
 │  Windows Host                           │
 │                                         │
 │  agentbox proxy server                  │
-│  ├── HTTP proxy on 127.0.0.1:18080     │
-│  └── SOCKS5 proxy on 127.0.0.1:18081  │
+│  ├── HTTP proxy on 0.0.0.0:18080       │
+│  └── SOCKS5 proxy on 0.0.0.0:18081    │
 │       │                                 │
 │       │  WSL2 networking mode:          │
 │       │  ├── "mirrored": localhost works│
@@ -662,6 +792,107 @@ func (p *Platform) proxyHostAddr() string {
     return p.resolveHostGateway()
 }
 ```
+
+#### 6.2.0 Proxy Bind Address
+
+The proxy server **must bind to `0.0.0.0`** (all interfaces) instead of `127.0.0.1` to be accessible from the WSL2 VM in NAT mode. This requires a corresponding change to `proxy/proxy.go`:
+
+```go
+// Current (Linux/macOS): binds to loopback only
+httpAddr, err := p.http.ListenAndServe("127.0.0.1:0")
+
+// Windows: binds to all interfaces for WSL2 access
+httpAddr, err := p.http.ListenAndServe("0.0.0.0:0")
+```
+
+> **Security:** Binding to `0.0.0.0` exposes the proxy on the local network. The Windows platform must add Windows Firewall rules restricting access to the WSL2 virtual subnet only:
+>
+> ```powershell
+> # Block all inbound to proxy port (safety net)
+> New-NetFirewallRule -DisplayName "agentbox-proxy-block-$PORT" `
+>     -Direction Inbound -LocalPort $PORT -Protocol TCP `
+>     -Action Block
+>
+> # Allow only WSL subnet (higher priority overrides block)  
+> New-NetFirewallRule -DisplayName "agentbox-proxy-allow-wsl-$PORT" `
+>     -Direction Inbound -LocalPort $PORT -Protocol TCP `
+>     -RemoteAddress 172.16.0.0/12 -Action Allow
+> ```
+>
+> Rules are named with the port number for uniqueness. On startup, the proxy implementation should clean up any stale `agentbox-proxy-*` rules from previous crashed sessions before creating new ones. The firewall rule is created when the proxy starts and removed on cleanup.
+>
+> **Note:** Both HTTP and SOCKS5 proxy ports need firewall rules if SOCKS5 proxy is enabled. Apply the same Block + Allow rule pattern to each port.
+
+**Proxy address injection by network mode:**
+
+| Mode | Detection | Proxy Address |
+|------|-----------|---------------|
+| Mirrored | `.wslconfig` has `networkingMode=mirrored` | `127.0.0.1:PORT` |
+| NAT (default) | No mirrored setting, or Win10 | Host IP from `/etc/resolv.conf` nameserver |
+
+The host IP is resolved **at each command invocation** (not cached) because the WSL2 virtual switch IP may change across WSL restarts.
+
+#### 6.2.1 Network Mode Detection
+
+WSL2 supports two networking modes that fundamentally affect how the sandbox reaches the Windows host proxy. The mode must be detected at platform initialization time.
+
+**Detection logic:** Read `%UserProfile%\.wslconfig` and parse the `[wsl2]` section for the `networkingMode` key.
+
+```go
+// detectWSLNetworkMode reads the user's .wslconfig and returns the
+// WSL2 networking mode ("nat" or "mirrored"). Defaults to "nat" if
+// the file is absent or the key is not set.
+func detectWSLNetworkMode() (string, error) {
+    home, err := os.UserHomeDir()
+    if err != nil {
+        return "nat", fmt.Errorf("cannot determine user home: %w", err)
+    }
+    cfg, err := os.ReadFile(filepath.Join(home, ".wslconfig"))
+    if errors.Is(err, os.ErrNotExist) {
+        return "nat", nil // default mode
+    }
+    if err != nil {
+        return "nat", fmt.Errorf("reading .wslconfig: %w", err)
+    }
+
+    inWSL2Section := false
+    scanner := bufio.NewScanner(bytes.NewReader(cfg))
+    for scanner.Scan() {
+        line := strings.TrimSpace(scanner.Text())
+        if strings.HasPrefix(line, "[") {
+            inWSL2Section = strings.EqualFold(line, "[wsl2]")
+            continue
+        }
+        if inWSL2Section && strings.HasPrefix(strings.ToLower(line), "networkingmode") {
+            parts := strings.SplitN(line, "=", 2)
+            if len(parts) == 2 {
+                mode := strings.TrimSpace(strings.ToLower(parts[1]))
+                if mode == "mirrored" {
+                    return "mirrored", nil
+                }
+            }
+        }
+    }
+    return "nat", nil
+}
+```
+
+**Mode-specific behavior:**
+
+| Aspect | NAT (default) | Mirrored (Win11 22H2+) |
+|--------|---------------|------------------------|
+| Host IP discovery | `ip route show default \| awk '{print $3}'` or parse `/proc/net/route` | `localhost` works bidirectionally |
+| Proxy setup | `HTTP_PROXY=http://<gateway-ip>:<port>` | `HTTP_PROXY=http://localhost:<port>` |
+| DNS resolver | Internal WSL DNS proxy at `172.x.x.1` | Mirrors Windows DNS configuration |
+| Firewall interaction | Windows Firewall may block WSL→host traffic | No firewall issues (loopback) |
+| Complexity | Higher — gateway IP can change on WSL restart | Lower — stable `localhost` address |
+
+**NAT mode host IP resolution:** In NAT mode, the host gateway IP is the default route inside the WSL2 VM. Two reliable methods:
+
+1. **`/proc/net/route`** (preferred — no subprocess): Parse the default route entry (destination `00000000`) and decode the gateway IP from the hex field.
+2. **`ip route show default`** (fallback): Execute `ip route show default | awk '{print $3}'` inside the distro.
+
+**Impact on `proxyHostAddr()`:** The function shown above already accounts for mode, but the mode detection must run during `Platform.init()` and be cached in `p.wslNetworkMode`. If detection fails, default to NAT mode (safe fallback) and log a warning.
 
 ### 6.3 DNS Resolution
 
@@ -742,17 +973,18 @@ func (j *jobObject) close() error {
 	return windows.CloseHandle(j.handle)
 }
 
-// setupProcessGroup configures the command to run in a new Windows Job Object
+// setupProcessGroup configures the command to run suspended in a new Windows Job Object
 // so that all child processes (including those inside WSL2) are terminated
-// when the parent exits.
+// when the parent exits. Uses CREATE_SUSPENDED to prevent race conditions —
+// the process is assigned to the Job Object before it starts executing.
 func setupProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+		CreationFlags: windows.CREATE_SUSPENDED | syscall.CREATE_NEW_PROCESS_GROUP,
 	}
 }
 ```
 
-After starting the process, the caller assigns it to the job:
+After starting the suspended process, the caller assigns it to the job and then resumes execution:
 
 ```go
 job, err := newJobObject()
@@ -761,7 +993,12 @@ defer job.close()
 
 cmd.Start()
 job.assign(windows.Handle(cmd.Process.Handle))
+
+// Resume the suspended process — see §15.5 for thread handle acquisition details
+resumeProcess(cmd.Process.Pid)
 ```
+
+> **Why CREATE_SUSPENDED?** Without it, `cmd.Start()` immediately begins execution and any child processes spawned before `job.assign()` would escape the Job Object. CREATE_SUSPENDED ensures the process is frozen until explicitly resumed after Job Object assignment.
 
 > **Backup cleanup**: If the Job Object mechanism fails (e.g., handle leak), `wsl --terminate agentbox-sb` during `Cleanup()` ensures the WSL2 distro and all its processes are stopped.
 
@@ -884,6 +1121,118 @@ Fallback output (`wsl.exe -l -v`):
   NAME            STATE           VERSION
 * Ubuntu          Running         2
   Alpine          Stopped         1
+```
+
+#### 8.1.1 Enhanced Dependency Checks
+
+The basic `CheckDependencies` above covers wsl.exe presence and WSL version.
+The following additional checks catch the most common deployment failures.
+
+**Hyper-V / Virtualization detection:**
+
+WSL2 requires hardware virtualization and the VirtualMachinePlatform Windows
+feature. These are the #1 and #2 most common support issues on new machines.
+
+```go
+// checkVirtualization verifies that Hyper-V prerequisites are met.
+func checkVirtualization(check *platform.DependencyCheck) {
+    // 1. Windows feature: VirtualMachinePlatform must be Enabled.
+    out, err := powershell(
+        `(Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform).State`)
+    if err != nil || strings.TrimSpace(out) != "Enabled" {
+        check.Errors = append(check.Errors,
+            "VirtualMachinePlatform feature is not enabled "+
+                "(run: dism.exe /Online /Enable-Feature /FeatureName:VirtualMachinePlatform /NoRestart)")
+        return
+    }
+
+    // 2. BIOS-level virtualization (VT-x / AMD-V).
+    out, err = powershell(
+        `(Get-CimInstance -ClassName Win32_Processor).VirtualizationFirmwareEnabled`)
+    if err == nil && strings.TrimSpace(out) == "False" {
+        check.Errors = append(check.Errors,
+            "Hardware virtualization is disabled in BIOS/UEFI — "+
+                "enable VT-x (Intel) or AMD-V in firmware settings")
+    }
+
+    // 3. Windows version floor: Win10 1903+ (build 18362), Win11, Server 2022+.
+    build := windowsBuildNumber() // helper: reads ReleaseId / CurrentBuild from registry
+    if build > 0 && build < 18362 {
+        check.Errors = append(check.Errors,
+            fmt.Sprintf("Windows build %d is too old; WSL2 requires build 18362+ "+
+                "(Windows 10 version 1903 or later)", build))
+    }
+}
+```
+
+**CVE version enforcement (WSL2 ≥ 2.5.10):**
+
+CVE-2025-53788 is a TOCTOU privilege-escalation in WSL2 < 2.5.10 (CVSS 7.0).
+We enforce the minimum version as a **fatal error** that blocks sandbox creation —
+running on a known-vulnerable WSL version would provide a false sense of security.
+
+```go
+var minWSLVersion = semver{2, 5, 10} // CVE-2025-53788 fix
+
+// checkWSLCVE parses the WSL build version and returns a fatal error if it is
+// below the minimum safe version.
+func checkWSLCVE(check *platform.DependencyCheck, wslPath string) {
+    // Primary: parse "wsl.exe --version" output.
+    out, err := exec.Command(wslPath, "--version").Output()
+    if err != nil {
+        // Inbox WSL has no --version flag. Fall back to file version.
+        out, err = powershell(
+            `(Get-Item C:\windows\system32\wsl.exe).VersionInfo.FileVersion`)
+        if err != nil {
+            check.Errors = append(check.Errors,
+                "cannot determine WSL version — CVE-2025-53788 check failed, blocking for safety")
+            return
+        }
+    }
+
+    // Extract version with regex: "WSL version: 2.5.10.0" or plain "2.5.10.0".
+    re := regexp.MustCompile(`(?:WSL version:\s+)?([\d]+\.[\d]+\.[\d]+)`)
+    m := re.FindStringSubmatch(string(out))
+    if m == nil {
+        check.Errors = append(check.Errors,
+            "cannot parse WSL version from output — CVE check failed, blocking for safety")
+        return
+    }
+
+    ver, err := parseSemver(m[1])
+    if err != nil {
+        check.Errors = append(check.Errors, fmt.Sprintf("cannot parse WSL version %q — CVE check failed, blocking for safety", m[1]))
+        return
+    }
+    if ver.Less(minWSLVersion) {
+        check.Errors = append(check.Errors,
+            fmt.Sprintf("WSL version %s is below %s — vulnerable to CVE-2025-53788 "+
+                "(TOCTOU privilege escalation, CVSS 7.0). "+
+                "Update with: wsl --update", m[1], minWSLVersion))
+    }
+}
+```
+
+**Integration into `CheckDependencies`:**
+
+The enhanced checks are appended after the existing WSL1/WSL2 detection block:
+
+```go
+func (p *Platform) CheckDependencies() *platform.DependencyCheck {
+    check := &platform.DependencyCheck{}
+
+    // ... existing wsl.exe and WSL version checks (§8.1.1) ...
+
+    // Enhanced: virtualization and Windows version.
+    checkVirtualization(check)
+
+    // Enhanced: CVE version enforcement (fatal — blocks sandbox).
+    checkWSLCVE(check, p.wslPath)
+
+    // ... existing distro and helper checks ...
+
+    return check
+}
 ```
 
 ### 8.2 Capabilities
@@ -1073,24 +1422,98 @@ Three options were evaluated:
 
 | Option | Approach | Pros | Cons |
 |--------|----------|------|------|
-| **A** | Embed Linux binary in Windows binary via `go:embed` | Single binary distribution | Bloats Windows binary; cross-compilation complexity |
+| **A** | Embed Linux binary in Windows binary via `go:embed` | Single binary distribution; works offline | Bloats Windows binary (+5–8 MB); cross-compilation complexity |
 | **B** | Build separately, copy into WSL distro during provisioning | Simple build process; clean separation | Requires separate build step; user must have the binary |
 | **C** | Compile on-the-fly inside WSL using `go build` | Always up-to-date | Requires Go toolchain inside WSL; slow first run |
 
-**Recommendation: Option B** for simplicity and separation of concerns.
+**Recommendation: Option A (go:embed)** for zero-dependency offline support.
 
-The helper binary is:
-1. Built separately as `GOOS=linux GOARCH=amd64 go build -o sandbox-helper ./cmd/sandbox-helper/`
-2. Distributed alongside the agentbox release (or downloaded on first use)
-3. Copied into the WSL distro at `/opt/agentbox/helper` during provisioning
+*Rationale*: Option B requires users to manage a separate binary artifact, and
+Option C requires a Go toolchain inside WSL. VS Code uses a download-on-demand
+model (requires internet), and Docker Desktop pre-bundles in its installer. We
+choose `go:embed` because it provides a single self-contained binary with no
+network requirement and deterministic builds — the same property that makes Go
+binaries attractive in the first place.
 
-For development and testing, a `Makefile` target handles cross-compilation:
+#### Embedding approach
+
+Pre-compiled Linux binaries for both amd64 and arm64 are embedded at build time:
+
+```go
+package helper
+
+import _ "embed"
+
+//go:embed bin/sandbox-helper-linux-amd64
+var helperAmd64 []byte
+
+//go:embed bin/sandbox-helper-linux-arm64
+var helperArm64 []byte
+
+// HelperBinary returns the pre-compiled helper for the given architecture.
+func HelperBinary(goarch string) ([]byte, error) {
+    switch goarch {
+    case "amd64":
+        return helperAmd64, nil
+    case "arm64":
+        return helperArm64, nil
+    default:
+        return nil, fmt.Errorf("unsupported architecture: %s", goarch)
+    }
+}
+```
+
+#### Architecture detection
+
+The Windows host architecture determines which Linux binary to deploy.
+`runtime.GOARCH` on Windows maps directly to the WSL2 architecture since WSL2
+always matches the host CPU:
+
+```go
+// wslArch returns the Linux GOARCH matching the Windows host.
+func wslArch() string {
+    return runtime.GOARCH // amd64 on x86_64, arm64 on ARM64
+}
+```
+
+#### Build pipeline
+
+The Makefile cross-compiles both architectures before building the Windows binary:
 
 ```makefile
+HELPER_SRC   := ./cmd/sandbox-helper/
+HELPER_OUT   := ./platform/windows/helper/bin
+
 .PHONY: sandbox-helper
 sandbox-helper:
-	GOOS=linux GOARCH=amd64 go build -o bin/sandbox-helper ./cmd/sandbox-helper/
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+		-trimpath -ldflags="-s -w" \
+		-o $(HELPER_OUT)/sandbox-helper-linux-amd64 $(HELPER_SRC)
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
+		-trimpath -ldflags="-s -w" \
+		-o $(HELPER_OUT)/sandbox-helper-linux-arm64 $(HELPER_SRC)
+
+# The Windows build depends on the helper binaries being present for go:embed.
+.PHONY: build-windows
+build-windows: sandbox-helper
+	GOOS=windows GOARCH=amd64 go build -o bin/agentbox.exe ./cmd/agentbox/
 ```
+
+**CI integration**: The `sandbox-helper` target must run before the Windows
+build so that the `go:embed` directives can resolve. In GitHub Actions this
+means adding the cross-compilation step before `go build`:
+
+```yaml
+- name: Build sandbox-helper (Linux)
+  run: make sandbox-helper
+- name: Build agentbox (Windows)
+  run: make build-windows
+```
+
+**Deployment into the distro**: During provisioning (§3.3), the embedded binary
+is written to `/opt/agentbox/helper` inside the WSL2 distro via
+`wsl -d <distro> -- sh -c 'cat > /opt/agentbox/helper && chmod 755 /opt/agentbox/helper'`
+with the binary content piped through stdin.
 
 ---
 
@@ -1126,6 +1549,35 @@ var (
     // ErrHelperNotFound indicates the sandbox helper binary is not
     // installed in the distro. Simple Mode will be used.
     ErrHelperNotFound = errors.New("sandbox helper binary not found in distro")
+
+    // ErrWSLVersionInsecure indicates the installed WSL version is below
+    // the minimum required to mitigate known CVEs (currently 2.5.10 for
+    // CVE-2025-53788). Sandbox creation is blocked.
+    // Recovery: run "wsl --update" to install the latest WSL version.
+    ErrWSLVersionInsecure = errors.New("WSL version is below the security minimum (2.5.10)")
+
+    // ErrDistroCorrupted indicates the health check detected filesystem
+    // corruption or an unusable distro state.
+    // Recovery: automatic unregister + re-provision (idempotent).
+    ErrDistroCorrupted = errors.New("sandbox distro is corrupted")
+
+    // ErrVirtualizationDisabled indicates Hyper-V or BIOS-level
+    // virtualization is not enabled, preventing WSL2 from running.
+    // Recovery: enable VT-x/AMD-V in BIOS and enable VirtualMachinePlatform
+    // Windows feature.
+    ErrVirtualizationDisabled = errors.New("hardware virtualization or Hyper-V is disabled")
+
+    // ErrHelperArchMismatch indicates the embedded helper binary
+    // architecture does not match the WSL2 distro (e.g., amd64 helper
+    // on arm64 WSL2 instance).
+    // Recovery: rebuild agentbox with correct GOARCH for cross-compilation.
+    ErrHelperArchMismatch = errors.New("helper binary architecture does not match WSL2 distro")
+
+    // ErrVHDDiskFull indicates the WSL2 virtual hard disk has reached
+    // its capacity limit, preventing sandbox operations.
+    // Recovery: compact the VHD (wsl --manage <distro> --compact), enable
+    // sparse VHD mode, or increase the VHD size limit.
+    ErrVHDDiskFull = errors.New("WSL2 VHD disk is full")
 )
 ```
 
@@ -1143,6 +1595,78 @@ The platform follows the agentbox `FallbackPolicy` contract:
 | Path translation failed | Return error | Log warning, skip untranslatable path |
 
 **Note**: Helper binary absence is **not** treated as a fatal error in either mode. The system degrades gracefully to Simple Mode, which still provides Tier 1 isolation.
+
+Additional fallback entries for the new error types:
+
+| Condition | `FallbackStrict` | `FallbackWarn` |
+|-----------|-------------------|----------------|
+| WSL version insecure | Return `ErrWSLVersionInsecure` (blocks sandbox) | Return `ErrWSLVersionInsecure` (blocks sandbox — no fallback for security) |
+| Distro corrupted | Auto-recover: unregister + re-provision | Auto-recover: unregister + re-provision |
+| Virtualization disabled | Return `ErrVirtualizationDisabled` | Use `NopManager` with warning |
+| Helper arch mismatch | Return `ErrHelperArchMismatch` | Fall back to Simple Mode (Tier 1) |
+| VHD disk full | Return `ErrVHDDiskFull` | Log warning, attempt VHD compaction, retry once |
+
+> **Security note**: `ErrWSLVersionInsecure` is **always fatal** regardless of fallback policy. Running a sandbox on a known-vulnerable WSL version would provide a false sense of security.
+
+### 11.3 Error Propagation from Helper Binary
+
+The sandbox helper binary runs inside the WSL2 distro and communicates results back to the Windows host via `wsl.exe`. Understanding the error propagation path is critical for debugging.
+
+**Exit code propagation:** `wsl.exe` propagates the Linux process exit code directly to the Windows caller. The following ranges are reserved:
+
+| Exit Code Range | Meaning |
+|----------------|---------|
+| `0` | Success |
+| `1–99` | User command errors (passed through from the sandboxed process) |
+| `100–199` | Sandbox setup errors (helper failed to configure isolation) |
+| `200–254` | Reserved for future use (currently passed through as-is) |
+| `255` / `-1` | WSL infrastructure crash or signal-based termination |
+| `0xFFFFFFFF` (4294967295) | WSL VM crash — the lightweight utility VM terminated unexpectedly |
+
+**Structured error protocol:** In addition to exit codes, the helper binary writes structured error information to stderr using a marker-delimited JSON protocol:
+
+```
+[AGENTBOX_ERROR]{"code":101,"type":"setup","msg":"failed to create mount namespace","detail":"EPERM"}
+```
+
+The marker prefix `[AGENTBOX_ERROR]` allows the Windows-side parser to distinguish structured errors from regular stderr output of the user's command.
+
+```go
+// parseHelperError extracts a structured error from the helper's stderr
+// output. Returns nil if no AGENTBOX_ERROR marker is found.
+func parseHelperError(stderr []byte) *HelperError {
+    const marker = "[AGENTBOX_ERROR]"
+    idx := bytes.LastIndex(stderr, []byte(marker))
+    if idx == -1 {
+        return nil
+    }
+    jsonData := stderr[idx+len(marker):]
+    // Find end of JSON object (first newline or EOF).
+    if nl := bytes.IndexByte(jsonData, '\n'); nl != -1 {
+        jsonData = jsonData[:nl]
+    }
+    var herr HelperError
+    if err := json.Unmarshal(jsonData, &herr); err != nil {
+        return nil // malformed — treat as unstructured error
+    }
+    return &herr
+}
+
+// HelperError represents a structured error from the sandbox helper.
+type HelperError struct {
+    Code   int    `json:"code"`   // exit code (100-199 range)
+    Type   string `json:"type"`   // "setup", "runtime", "cleanup"
+    Msg    string `json:"msg"`    // human-readable message
+    Detail string `json:"detail"` // optional OS-level detail (errno, etc.)
+}
+```
+
+**Windows-side error handling:** After `wsl.exe` returns, the platform checks errors in order:
+
+1. Check for `0xFFFFFFFF` exit code → return WSL VM crash error.
+2. Parse stderr for `[AGENTBOX_ERROR]` marker → return typed `HelperError`.
+3. Check exit code 100–199 → return generic setup error with exit code.
+4. Otherwise → pass through exit code and stderr as-is to the caller.
 
 ---
 
@@ -1274,22 +1798,12 @@ Microsoft security update requiring robust update procedures. Ensure WSL2 is kep
 | 4 | No per-distro resource limits | Cannot limit CPU/memory per distro (VM-wide `.wslconfig` only) | Use `rlimit` inside the sandbox (same as native Linux) |
 | 5 | UNC paths not supported | Cannot sandbox projects on network shares | Document limitation; recommend local copies |
 | 6 | Administrator for initial WSL2 setup | First-time WSL2 installation requires admin rights | One-time requirement; subsequent use is unprivileged |
-| 7 | WSL2 not available on Windows Server | Windows Server does not include WSL2 by default | Document as unsupported; may work with manual WSL2 install |
+| 7 | WSL2 on Windows Server | WSL2 on Windows Server requires manual installation (not included in default Server role); supported on Server 2022+ | Detect Server SKU and guide user through manual WSL2 installation |
 | 8 | **CVE-2025-53788** | Privilege escalation in WSL2 < 2.5.10 | Enforce minimum version check |
+| 9 | 9P filesystem performance | Cross-FS operations (Windows↔WSL) run at 3–18% of native performance; random writes can drop below 1% | Keep sandbox working files in WSL native filesystem (`/home/`); avoid cross-FS I/O on hot paths |
+| 10 | Windows Defender real-time scanning | 30–50% reduction in filesystem operation throughput when Defender scans WSL VHD and `\\wsl$` paths | Recommend AV exclusions for VHDX paths and WSL UNC paths (see §13.3.1 and Appendix F) |
 
 ### 13.3 Security Considerations
-
-| # | Limitation | Impact | Mitigation |
-|---|-----------|--------|------------|
-| 1 | Requires WSL2 installation | Not available on all Windows machines (especially locked-down enterprise) | Clear error message; `FallbackWarn` uses `NopManager` |
-| 2 | Cold-start overhead (~1-2s) | First command execution is slower than native Linux | Distro kept running between commands; warm start is near-instant |
-| 3 | Shared WSL2 kernel | All WSL2 distros share the same Linux kernel; a kernel exploit affects all | Mitigated by Hyper-V isolation from Windows host |
-| 4 | No per-distro resource limits | Cannot limit CPU/memory per distro (VM-wide `.wslconfig` only) | Use `rlimit` inside the sandbox (same as native Linux) |
-| 5 | UNC paths not supported | Cannot sandbox projects on network shares | Document limitation; recommend local copies |
-| 6 | Administrator for initial WSL2 setup | First-time WSL2 installation requires admin rights | One-time requirement; subsequent use is unprivileged |
-| 7 | WSL2 not available on Windows Server | Windows Server does not include WSL2 by default | Document as unsupported; may work with manual WSL2 install |
-
-### 13.2 Security Considerations
 
 1. **WSL interop must be disabled** — Without `interop.enabled=false`, any process inside WSL2 can execute `cmd.exe /c <anything>` to escape to Windows. This is the single most critical security setting.
 
@@ -1306,6 +1820,17 @@ Microsoft security update requiring robust update procedures. Ensure WSL2 is kep
 
 6. **wsl.exe as the trust boundary** — The Windows host trusts `wsl.exe` to correctly isolate commands. A compromised `wsl.exe` or WSL infrastructure would break isolation. This is an acceptable trust assumption (same as trusting `sandbox-exec` on macOS).
 
+#### 13.3.1 Windows Defender Exclusions
+
+Real-time antivirus scanning significantly degrades WSL2 filesystem performance. Benchmarks show a **30–50% reduction** in filesystem operation throughput when Windows Defender scans WSL-related paths.
+
+**Recommended exclusions** (full table and setup commands in Appendix F.1):
+VHDX folder path, `\\wsl$\*`, `\\wsl.localhost\*`, `wsl.exe` process, `wslservice.exe` process.
+
+> **Note**: These exclusions reduce scanning overhead but also mean malware written to the WSL filesystem will not be caught by Defender in real-time. This is an acceptable trade-off for a sandboxed environment where the filesystem is ephemeral and controlled. For enterprise deployments, consider using Microsoft Defender for Endpoint's WSL plug-in (requires WSL 2.0.7.0+) instead of blanket exclusions.
+
+See **Appendix F** for detailed setup instructions and **§5.4** for cross-filesystem performance benchmarks.
+
 ### 13.4 Future Enhancements
 
 1. **Native Windows sandbox (Job Objects + ACLs)** — An alternative implementation that uses Windows-native isolation without WSL2. Lower security but zero additional dependencies. Could complement WSL2 as a fallback.
@@ -1318,18 +1843,145 @@ Microsoft security update requiring robust update procedures. Ensure WSL2 is kep
 
 5. **cgroup-based resource limits** — When WSL2 supports cgroups v2 per-distro (currently VM-wide only), add fine-grained resource limits.
 
+### 13.5 WSL2 Version Enforcement
+
+A minimum WSL version policy is enforced to protect against known privilege escalation vulnerabilities.
+
+**Current minimum: WSL 2.5.10+**
+
+| CVE | Description | CVSS | Fixed In |
+|-----|------------|------|----------|
+| CVE-2025-53788 | TOCTOU privilege escalation in WSL2 | 7.0 (High) | 2.5.10 |
+
+> Nessus Plugin 250272 can be used for enterprise-wide compliance scanning of this requirement.
+
+**Enforcement behavior:**
+
+1. During `Platform.Available()` and `CheckDependencies()`, the WSL version is parsed from `wsl.exe --version` output (see §8.1.1 for version parsing details).
+2. If the version is below the minimum, `ErrWSLVersionInsecure` is returned.
+3. This error is **always fatal** — it cannot be downgraded by `FallbackWarn`. Running a sandbox on a known-vulnerable WSL version would provide a false sense of security.
+4. The error message includes the detected version, the minimum required version, and instructions to update (`wsl --update`).
+
+**Version parsing reference:** Cross-reference §8.1.1 enhanced version checks. The version string is extracted from the `WSL version: X.Y.Z` line of `wsl.exe --version` output using the regex pattern `WSL version:\s+([\d.]+)`.
+
+**Update cadence recommendation:** Check for WSL updates at least monthly. The `wsl --update` command can be run unprivileged on modern Windows. Enterprise deployments should track Microsoft's WSL release notes and update the minimum version constant when new security-relevant CVEs are disclosed.
+
+---
+
+## 15. Dependency Strategy
+
+### 15.1 Principle: Minimal External Dependencies
+
+The Windows platform implementation uses **zero new external Go modules** beyond the Go standard library and `golang.org/x/sys/windows` (already an indirect dependency of the project). All Windows/WSL integration code is self-implemented. The previously anticipated `golang.org/x/text` dependency was eliminated by using `WSL_UTF8=1` (✅ verified).
+
+**Rationale:** Available third-party WSL/Windows libraries (e.g., `ubuntu/GoWSL` ★20, `kolesnikovae/go-winjob` ★21, `ardnew/wslpath` ★12) have low adoption and single maintainers. Self-implementing these ~500 lines of focused code provides better control, fewer supply-chain risks, and no version compatibility concerns.
+
+### 15.2 Self-Implemented Components
+
+| Component | Replaces | Lines (est.) | Approach |
+|-----------|----------|-------------|----------|
+| WSL CLI Wrapper | `ubuntu/GoWSL` | ~200-300 | Shell out to `wsl.exe` for all operations |
+| Job Object Manager | `kolesnikovae/go-winjob` | ~150-200 | Thin wrappers around `kernel32.dll` via `x/sys/windows` |
+| Path Translator | `ardnew/wslpath` | ~80-150 | Pure string manipulation for drive letter mapping |
+
+### 15.3 Allowed Dependencies
+
+| Dependency | Usage | Justification |
+|------------|-------|---------------|
+| `golang.org/x/sys/windows` | Job Objects, process management, registry | Go official extended stdlib; already indirect project dependency |
+| ~~`golang.org/x/text/encoding/unicode`~~ | ~~Decode `wsl.exe` UTF-16LE output~~ | **Not needed** — `WSL_UTF8=1` eliminates UTF-16LE (✅ verified, see §15.4) |
+
+> **✅ PoC Verified (2026-03-09):** With `WSL_UTF8=1`, the only required dependency is `golang.org/x/sys/windows`. True zero new external dependencies achieved.
+
+### 15.4 WSL CLI Wrapper Design
+
+All WSL2 management uses `wsl.exe` CLI rather than the COM API (`wslapi.dll`):
+
+| Operation | Command | Notes |
+|-----------|---------|-------|
+| Import distro | `wsl --import <name> <path> -` | Accepts tar via stdin pipe (from `go:embed`) |
+| Run command | `wsl -d <name> -- <cmd>` | Primary execution path |
+| List distros | `wsl --list --verbose` | Set `WSL_UTF8=1` for UTF-8 output (✅ verified); without it, output is UTF-16LE |
+| Terminate | `wsl --terminate <name>` | Async; may take 1-2 seconds |
+| Version check | `wsl --version` | Store WSL: "WSL version: X.Y.Z"; Inbox: may fail |
+| Unregister | `wsl --unregister <name>` | Used for distro recovery |
+
+> **Why CLI over COM API:** The `wsl.exe` CLI is more stable across Windows versions, easier to test (mock via exec), and avoids DLL loading complexity. The COM API (`wslapi.dll`) requires UTF-16 string marshaling and has no advantage for our use cases. The only trade-off is process-spawn overhead (~10ms per call), which is negligible for sandbox lifecycle operations.
+
+> **✅ Encoding: Verified (2026-03-09 on Windows Server 2025).** Setting `WSL_UTF8=1` environment variable before invoking `wsl.exe` forces UTF-8 output. Tested on all 6 management subcommands (`--version`, `-l -v`, `--status`, `--list`, `--help`, `--list --online`) — 100% effective, byte size exactly halved (UTF-16LE→UTF-8). No BOM added. **`golang.org/x/text` dependency is eliminated.** Implementation: `cmd.Env = append(os.Environ(), "WSL_UTF8=1")`.
+
+### 15.5 Job Object Implementation
+
+Minimal Job Object wrapper using `golang.org/x/sys/windows`:
+
+```go
+// Core pattern: CREATE_SUSPENDED → Assign to Job → Resume
+cmd := exec.Command("wsl.exe", args...)
+cmd.SysProcAttr = &syscall.SysProcAttr{
+    CreationFlags: windows.CREATE_SUSPENDED | syscall.CREATE_NEW_PROCESS_GROUP,
+}
+cmd.Start()
+
+// Assign to job (ensures all child processes are cleaned up)
+windows.AssignProcessToJobObject(jobHandle, processHandle)
+
+// Set KILL_ON_JOB_CLOSE — all processes die when job handle is closed
+info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
+    BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
+        LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    },
+}
+windows.SetInformationJobObject(jobHandle, windows.JobObjectExtendedLimitInformation, ...)
+
+// Resume the suspended process
+windows.ResumeThread(threadHandle)
+```
+
+> **✅ Job Object Pattern: Verified (2026-03-09 on Windows Server 2025).** The full `CREATE_SUSPENDED` → `AssignProcessToJobObject` → `ResumeThread` flow works correctly with `os/exec`. Thread handle acquisition via `CreateToolhelp32Snapshot` + `Thread32First`/`Thread32Next` is reliable. Additionally, `NtResumeProcess` (from `ntdll.dll`) was verified as a simpler alternative — it operates directly on the process handle without thread enumeration. **Recommended:** Use `ResumeThread` (documented API) as primary, `NtResumeProcess` as fallback.
+
+### 15.6 Path Translation
+
+Simple bidirectional mapping between Windows and WSL paths:
+
+```go
+// Windows → WSL: C:\Users\foo → /mnt/c/Users/foo
+func WinToWSL(p string) string {
+    if len(p) >= 2 && p[1] == ':' {
+        drive := strings.ToLower(string(p[0]))
+        rest := strings.ReplaceAll(p[2:], `\`, "/")
+        return "/mnt/" + drive + rest
+    }
+    return strings.ReplaceAll(p, `\`, "/")
+}
+
+// WSL → Windows: /mnt/c/Users/foo → C:\Users\foo
+func WSLToWin(p string) string {
+    if strings.HasPrefix(p, "/mnt/") && len(p) >= 6 {
+        drive := strings.ToUpper(string(p[5]))
+        if len(p) == 6 {
+            return drive + `:\`
+        }
+        if p[6] == '/' {
+            return drive + ":" + strings.ReplaceAll(p[6:], "/", `\`)
+        }
+    }
+    return p
+}
+```
+
+Edge cases (UNC paths `\\server\share`, extended paths `\\?\`) are deferred to a future phase; the initial implementation covers the common drive-letter case which handles >99% of real-world paths.
+
 ---
 
 ## Appendix D: Industry Reference Implementations
 
 ### D.1 Anthropic Sandbox Runtime (Claude Code)
 
-The [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) is an open-source TypeScript implementation that provides:
+The [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) is an open-source TypeScript implementation that supports **macOS and Linux only** — **Windows is explicitly unsupported** (Claude Code runs without sandboxing on Windows):
 
 - **macOS**: `sandbox-exec` with dynamically generated Seatbelt profiles
-- **Linux/WSL2**: bubblewrap with network namespace isolation
-- **Dual isolation**: Filesystem (deny-read, allow-write patterns) + Network (proxy-based)
-- **Unix socket blocking**: seccomp BPF filters on Linux
+- **Linux**: bubblewrap with network namespace isolation + seccomp BPF filters
+- **Windows**: ❌ **Not supported** — no sandbox is applied; commands run unconfined
 
 **Key design decisions to reference:**
 1. Mandatory deny paths (auto-protected files like `.bashrc`, `.zshrc`)
@@ -1339,27 +1991,37 @@ The [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
 
 ### D.2 OpenAI Codex CLI
 
-Codex CLI uses platform-specific sandboxing:
+Codex CLI (`github.com/openai/codex`, Rust) uses **platform-native sandboxing** — notably a Windows native approach rather than WSL2:
+
 - **macOS**: Apple Seatbelt with `sandbox-exec`
-- **Linux/WSL2**: Landlock v3 + seccomp + user namespaces
+- **Linux**: Landlock v3 + seccomp + optional bubblewrap
+- **Windows**: **Native Windows sandbox** using Restricted Tokens + ACLs + Capability SIDs (`codex-rs/windows-sandbox-rs/`)
 
-**Known issues:**
-- Landlock/seccomp compatibility issues on some WSL2 configurations ([openai/codex#1039](https://github.com/openai/codex/issues/1039))
-- Requires kernel features that may not be available in all WSL2 setups
+**Windows sandbox details:**
+- Creates `CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED` flags
+- Filesystem isolation via DACLs (`SetEntriesInAclW` + `SetNamedSecurityInfoW`) with per-workspace Capability SIDs
+- Network isolation varies by mode:
+  - **Unelevated (Restricted Token)**: environment variables only (`HTTP_PROXY=127.0.0.1:9`, `PIP_NO_INDEX=1`, etc.) — easily bypassed
+  - **Elevated (dedicated sandbox user)**: Windows Firewall outbound block rule per sandbox SID (`codex_sandbox_offline_block_outbound`) + environment variables — stronger but requires admin/UAC
+- Two modes: Restricted Token (unelevated) and Elevated (dedicated `CodexSandboxUsers` accounts)
+- Status: marked as **"highly experimental"** with known bugs (#6374, #10090, #10601)
 
-**Lesson:** Pure Landlock approach has compatibility challenges; bubblewrap provides better compatibility.
+**Key takeaway:** Codex's Windows approach avoids WSL2 dependency but provides weaker security — ACL-based filesystem isolation lacks defense-in-depth, and environment-variable network blocking is trivially bypassed by any process that doesn't honor proxy settings. Our WSL2 + Hyper-V approach provides VM-level isolation with stronger security guarantees.
 
 ### D.3 Comparison Summary
 
 | Feature | Claude Code | OpenAI Codex | agentbox (proposed) |
 |---------|-------------|--------------|---------------------|
-| Windows Strategy | WSL2 + bubblewrap | WSL2 + Landlock | WSL2 + Linux sandbox |
+| Windows Strategy | ❌ No sandbox | Native (Restricted Tokens + ACLs) | WSL2 + Hyper-V + Linux sandbox |
 | macOS | Seatbelt | Seatbelt | Seatbelt |
 | Linux | bubblewrap | Landlock/seccomp | Namespaces + Landlock + seccomp |
 | WSL1 Support | ❌ No | ❌ No | ❌ No |
-| WSL2 Support | ✅ Full | ⚠️ Partial | ✅ Full |
+| WSL2 Support | ❌ No sandbox | ❌ Not used | ✅ Full |
+| Windows Network Isolation | N/A | ⚠️ Env vars (unelevated) / Firewall (elevated) | ✅ Linux network namespace |
+| Windows FS Isolation | N/A | ⚠️ ACLs (same-kernel, no VM boundary) | ✅ VM boundary + Landlock |
 | Open Source | ✅ Yes | ✅ Yes | ✅ Yes |
 | Implementation | TypeScript | Rust | Go |
+| Windows Maturity | N/A | Experimental | Planned |
 
 ### D.4 Sandboxing Technology Spectrum
 
@@ -1500,6 +2162,13 @@ Before declaring the Windows platform implementation complete, verify:
 - [ ] Process termination correctly propagates through wsl.exe to WSL2 processes
 - [ ] Integration tests verify filesystem isolation (cannot read/write outside allowed paths)
 - [ ] Integration tests verify network isolation (cannot reach network when blocked)
+- [ ] WSL2 version >= 2.5.10 (CVE-2025-53788 mitigation)
+- [ ] Windows Defender exclusions configured for performance (see Appendix F.1)
+- [ ] Distro health check passes before sandbox creation
+- [ ] BIOS virtualization and Hyper-V features verified
+- [ ] VHD disk space within limits
+- [ ] Helper binary architecture matches host
+- [ ] Helper error protocol ([AGENTBOX_ERROR] JSON) correctly parsed for all exit code ranges
 
 ## Appendix C: Comparison with Native Windows Sandbox Alternatives
 
@@ -1513,7 +2182,9 @@ Before declaring the Windows platform implementation complete, verify:
 
 The WSL2 approach provides the best balance of security, performance, and compatibility for the agentbox use case.
 
-### C.1 Why Not Landlock-Only (like Codex)?
+### C.1 Why Not Landlock-Only (like Codex on Linux)?
+
+> **Note:** This section discusses Codex's *Linux* sandbox approach (Landlock + seccomp). Codex's *Windows* approach is different — it uses native Windows security primitives (Restricted Tokens + ACLs) rather than WSL2. See Appendix D.2 for details on Codex's Windows sandbox.
 
 OpenAI Codex uses Landlock v3 + seccomp directly on Linux/WSL2. While this approach is elegant, it has compatibility issues:
 
@@ -1553,3 +2224,208 @@ Windows 11 24H2+ introduces `wsb.exe` for Windows Sandbox. While promising:
 3. **Windows 11 only**: Not available on Windows 10
 
 WSL2 provides better integration for agentbox's use case.
+
+---
+
+## Appendix F: Operational Guide
+
+### F.1 Windows Defender / Antivirus Exclusions
+
+Real-time antivirus scanning can severely impact WSL2 filesystem performance. Without
+exclusions, file operations inside WSL2 may see a **30-50% performance reduction** due
+to the host scanning every I/O operation on the backing VHD.
+
+**Recommended Exclusions:**
+
+| Type | Path / Value |
+|------|-------------|
+| Folder | `%LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalState\ext4.vhdx` |
+| Folder | `\\wsl$\*` |
+| Folder | `\\wsl.localhost\*` |
+| Process | `wsl.exe` |
+| Process | `wslservice.exe` |
+
+**Finding VHD Locations:**
+
+The registry key `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss` contains entries
+for each registered WSL distro. Each subkey (a GUID) has a `BasePath` value pointing to
+the directory containing the distro's `ext4.vhdx` file.
+
+```powershell
+# List all registered distro VHD paths
+Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss" |
+  ForEach-Object { Get-ItemProperty $_.PSPath } |
+  Select-Object DistributionName, BasePath
+```
+
+**Adding Exclusions (requires Administrator privileges):**
+
+```powershell
+# Add process exclusions
+Add-MpPreference -ExclusionProcess "wsl.exe"
+Add-MpPreference -ExclusionProcess "wslservice.exe"
+
+# Add path exclusions for WSL network paths
+Add-MpPreference -ExclusionPath "\\wsl$\*"
+Add-MpPreference -ExclusionPath "\\wsl.localhost\*"
+
+# Add exclusion for a specific distro VHD (example)
+$basePath = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss\*" |
+  Where-Object { $_.DistributionName -eq "agentbox-sb" }).BasePath
+if ($basePath) {
+    Add-MpPreference -ExclusionPath "$basePath\ext4.vhdx"
+}
+```
+
+> **Note:** These commands require elevated (Administrator) privileges. In enterprise
+> environments, exclusions may be managed via Group Policy and cannot be set locally.
+
+**Microsoft Defender for Endpoint WSL Plug-in:**
+
+For enterprise environments using Microsoft Defender for Endpoint, the WSL plug-in
+provides visibility into WSL2 distros without requiring blanket exclusions. This plug-in
+requires WSL version **2.0.7.0** or later.
+
+### F.2 Multi-User Windows Scenarios
+
+WSL2 distros are inherently **per-user**. Each Windows user has their own:
+
+- **Registry namespace**: Distro registrations are stored under `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss` (per-user hive)
+- **VHD storage**: Virtual hard disks reside in `%LOCALAPPDATA%\...` (per-user directory)
+- **WSL instance**: Each user session runs its own WSL2 lightweight VM
+
+**Implications for agentbox:**
+
+- The distro name can be a constant (`agentbox-sb`) since each Windows user has their own
+  namespace — no collision possible between users.
+- No special multi-user handling is required in the provisioning code.
+- Different Windows users are **fully isolated** by WSL2's per-user design.
+
+**Terminal Server / Multi-Session Scenarios:**
+
+On Windows Server with Remote Desktop Services (multi-session), each user session
+gets its own WSL2 instance. This means:
+
+- Multiple concurrent users on the same server each get independent sandboxes
+- Disk space compounds: each user gets their own VHD (see F.3 for management)
+- Memory usage scales with the number of active WSL2 instances
+
+### F.3 VHD Disk Space Management
+
+Each WSL2 distro uses a **Virtual Hard Disk (VHD)** file to store its filesystem.
+
+**VHD Locations:**
+
+- Default (Microsoft Store WSL): `%LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalState\ext4.vhdx`
+- Custom import path: specified during `wsl --import <distro> <install_location> <tarball>`
+- Registry lookup: `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss\{GUID}\BasePath`
+
+**Default Maximum Size:** 1 TB (virtual; actual disk usage depends on content)
+
+**Sparse VHD Mode (WSL 2.0.0+):**
+
+Sparse mode allows the VHD file to shrink when files are deleted inside WSL, rather than
+only growing. This is critical for sandbox distros that are frequently created and destroyed.
+
+```powershell
+# Enable sparse mode for a distro
+wsl --manage agentbox-sb --set-sparse true
+```
+
+**Resize VHD (WSL 2.5+):**
+
+```powershell
+# Set maximum VHD size to 50GB
+wsl --manage agentbox-sb --resize 50GB
+```
+
+**Manual Compaction Workflow:**
+
+When sparse mode is insufficient (e.g., older WSL versions), manual compaction reclaims
+unused space from the VHD file:
+
+```bash
+# Step 1: Inside WSL, trim unused filesystem blocks
+sudo fstrim -a
+```
+
+```powershell
+# Step 2: Shut down WSL to release the VHD file
+wsl --shutdown
+
+# Step 3: Compact the VHD using diskpart
+# Create a diskpart script
+$vhdPath = "C:\Users\<username>\AppData\Local\Packages\...\LocalState\ext4.vhdx"
+@"
+select vdisk file="$vhdPath"
+attach vdisk readonly
+compact vdisk
+detach vdisk
+exit
+"@ | diskpart
+```
+
+**Recommended Settings for agentbox Sandbox Distros:**
+
+1. **Enable sparse mode** immediately after import (`wsl --manage agentbox-sb --set-sparse true`)
+2. **Set a 50 GB size limit** to prevent runaway disk usage (`wsl --manage agentbox-sb --resize 50GB`)
+3. **Periodic compaction** on cleanup: run `fstrim -a` inside WSL before unregistering
+4. **Monitor disk usage** in `CheckDependencies` — warn if VHD exceeds 80% of limit
+
+### F.4 WSL1 to WSL2 Migration
+
+Some systems may have WSL1 distros or WSL1 as the default version. agentbox requires
+WSL2 for Hyper-V-based isolation.
+
+**Detection:**
+
+```powershell
+# List distros with their WSL version
+wsl -l -v
+```
+
+Example output:
+```
+  NAME            STATE           VERSION
+* Ubuntu          Running         2
+  Legacy-Distro   Stopped         1
+```
+
+The `VERSION` column indicates whether a distro uses WSL1 (1) or WSL2 (2).
+
+**If WSL1 Is Detected:**
+
+agentbox should **not** attempt automatic migration of existing distros. Instead:
+
+1. **Check the default WSL version:**
+   ```powershell
+   wsl --status
+   ```
+   Look for `Default Version: 2` in the output.
+
+2. **If default is WSL1**, provide a clear error message:
+   ```
+   ERROR: WSL default version is 1. agentbox requires WSL2.
+   Run: wsl --set-default-version 2
+   Then retry. If this fails, ensure Hyper-V and Virtual Machine Platform
+   are enabled in Windows Features.
+   ```
+
+**Migration Command (for reference):**
+
+```powershell
+# Convert an existing distro from WSL1 to WSL2
+wsl --set-version <distro-name> 2
+```
+
+> **Note:** Migration can take several minutes depending on distro size. It may fail if
+> Hyper-V or Virtual Machine Platform features are not enabled, or if BIOS virtualization
+> is disabled.
+
+**Recommended Implementation in `CheckDependencies`:**
+
+1. Run `wsl --status` and verify `Default Version: 2`
+2. If WSL1 is the default, return a `DependencyCheck` error with actionable guidance
+3. Do **not** auto-migrate — the user should explicitly opt in
+4. If the agentbox sandbox distro already exists as WSL1 (edge case after downgrade),
+   unregister and re-provision as WSL2
