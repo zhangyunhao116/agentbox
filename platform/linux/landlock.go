@@ -170,9 +170,11 @@ func applyLandlock(cfg *platform.WrapConfig) error {
 	readAccess := uint64(accessFSExecute | accessFSReadFile | accessFSReadDir)
 
 	// Build a set of DenyRead paths to exclude from readable ruleset.
+	// Normalize with filepath.Clean so trailing slashes and redundant
+	// path elements don't cause missed matches.
 	denyReadSet := make(map[string]bool, len(cfg.DenyRead))
 	for _, p := range cfg.DenyRead {
-		denyReadSet[p] = true
+		denyReadSet[filepath.Clean(p)] = true
 	}
 
 	// Create the ruleset.

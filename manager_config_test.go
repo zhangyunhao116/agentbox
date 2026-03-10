@@ -1534,7 +1534,9 @@ func TestBuildWrapConfigNonGlobPathPreserved(t *testing.T) {
 func TestBuildWrapConfigGitWorktree(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create the target gitdir directory so ResolveGitWorktree can resolve it.
+	// Create the target gitdir directory to make the test realistic.
+	// Note: ResolveGitWorktree only parses and cleans the path; it does
+	// not stat the target directory itself.
 	gitdirTarget := filepath.Join(tmpDir, "main-repo", ".git", "worktrees", "feature")
 	if err := os.MkdirAll(gitdirTarget, 0o755); err != nil {
 		t.Fatalf("MkdirAll error: %v", err)
