@@ -122,10 +122,10 @@ func TestBuildSeccompFilterLength(t *testing.T) {
 		arch    string
 		wantLen int // total BPF instructions: 4 (header) + n (blocked) + 6 (tail)
 	}{
-		// amd64: 30 unconditional + 4 arch-specific (mknod, mknodat, ioperm, iopl) = 34 blocked → 44 total
-		{"amd64", 44},
-		// arm64: 30 unconditional + 1 arch-specific (mknodat only) = 31 blocked → 41 total
-		{"arm64", 41},
+		// amd64: 33 unconditional + 4 arch-specific (mknod, mknodat, ioperm, iopl) = 37 blocked → 47 total
+		{"amd64", 47},
+		// arm64: 33 unconditional + 1 arch-specific (mknodat only) = 34 blocked → 44 total
+		{"arm64", 44},
 	}
 
 	for _, tt := range tests {

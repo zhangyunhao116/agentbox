@@ -478,6 +478,9 @@ func TestSeccompSyscallsFor_Amd64(t *testing.T) {
 		{"sysPerfEventOpen", sc.sysPerfEventOpen, 298},
 		{"sysBpf", sc.sysBpf, 321},
 		{"sysUserfaultfd", sc.sysUserfaultfd, 323},
+		{"sysIoUringSetup", sc.sysIoUringSetup, 425},
+		{"sysIoUringEnter", sc.sysIoUringEnter, 426},
+		{"sysIoUringRegister", sc.sysIoUringRegister, 427},
 		{"sysOpenByHandleAt", sc.sysOpenByHandleAt, 304},
 		{"sysSetns", sc.sysSetns, 308},
 		{"sysUnshare", sc.sysUnshare, 272},
@@ -533,6 +536,9 @@ func TestSeccompSyscallsFor_Arm64(t *testing.T) {
 		{"sysPerfEventOpen", sc.sysPerfEventOpen, 241},
 		{"sysBpf", sc.sysBpf, 280},
 		{"sysUserfaultfd", sc.sysUserfaultfd, 282},
+		{"sysIoUringSetup", sc.sysIoUringSetup, 425},
+		{"sysIoUringEnter", sc.sysIoUringEnter, 426},
+		{"sysIoUringRegister", sc.sysIoUringRegister, 427},
 		{"sysOpenByHandleAt", sc.sysOpenByHandleAt, 265},
 		{"sysSetns", sc.sysSetns, 268},
 		{"sysUnshare", sc.sysUnshare, 97},
@@ -579,8 +585,8 @@ func TestBuildSeccompFilter_BlockedCount(t *testing.T) {
 		// arm64 does not (sysMknod is also 0 on arm64).
 		minBlocked int
 	}{
-		{"amd64", 34}, // 30 unconditional + mknod + mknodat + ioperm + iopl
-		{"arm64", 31}, // 30 unconditional + mknodat (mknod=0, ioperm=0, iopl=0)
+		{"amd64", 37}, // 33 unconditional + mknod + mknodat + ioperm + iopl
+		{"arm64", 34}, // 33 unconditional + mknodat (mknod=0, ioperm=0, iopl=0)
 	}
 	for _, tt := range tests {
 		t.Run(tt.arch, func(t *testing.T) {
@@ -594,6 +600,54 @@ func TestBuildSeccompFilter_BlockedCount(t *testing.T) {
 			n := len(filter) - 4 - 6
 			if n < tt.minBlocked {
 				t.Errorf("arch %s: blocked syscall count = %d, want >= %d", tt.arch, n, tt.minBlocked)
+			}
+		})
+	}
+}
+
+// TestApplySeccomp_BlocksIoUring verifies that io_uring_setup is blocked with EPERM.
+func TestApplySeccomp_BlocksIoUring(t *testing.T) {
+	if os.Getenv("TEST_SUBPROCESS") == "1" {
+		seccompSubprocessHelper(func() string {
+			sc, err := seccompSyscallsFor(runtime.GOARCH)
+			if err != nil {
+				return fmt.Sprintf("RESULT:ERROR unsupported arch: %v", err)
+			}
+			_, _, errno := syscall.Syscall(uintptr(sc.sysIoUringSetup), 0, 0, 0)
+			if errno != syscall.EPERM {
+				return fmt.Sprintf("RESULT:ERROR expected EPERM, got: %v", errno)
+			}
+			return "RESULT:IO_URING_BLOCKED"
+		})
+		return
+	}
+
+	result := runSeccompSubprocess(t, "TestApplySeccomp_BlocksIoUring")
+	if strings.Contains(result, "RESULT:ERROR") {
+		t.Fatal(result)
+	}
+	if !strings.Contains(result, "RESULT:IO_URING_BLOCKED") {
+		t.Fatalf("expected RESULT:IO_URING_BLOCKED, got: %q", result)
+	}
+}
+
+// TestSeccompSyscallsFor_IoUringNonZero verifies that io_uring syscall numbers
+// are non-zero for both amd64 and arm64.
+func TestSeccompSyscallsFor_IoUringNonZero(t *testing.T) {
+	for _, arch := range []string{"amd64", "arm64"} {
+		t.Run(arch, func(t *testing.T) {
+			sc, err := seccompSyscallsFor(arch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sc.sysIoUringSetup == 0 {
+				t.Errorf("sysIoUringSetup is 0 on %s", arch)
+			}
+			if sc.sysIoUringEnter == 0 {
+				t.Errorf("sysIoUringEnter is 0 on %s", arch)
+			}
+			if sc.sysIoUringRegister == 0 {
+				t.Errorf("sysIoUringRegister is 0 on %s", arch)
 			}
 		})
 	}

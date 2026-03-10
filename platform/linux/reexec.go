@@ -21,12 +21,13 @@ const reExecEnvKey = "_AGENTBOX_CONFIG"
 
 // Function variables for dependency injection in tests.
 var (
-	hardenProcessFn    = hardenProcess
-	applyLandlockFn    = applyLandlock
-	applyResourceLimFn = applyResourceLimits
-	applySeccompFn     = ApplySeccomp
-	syscallExecFn      = syscall.Exec
-	osExitFn           = os.Exit
+	hardenProcessFn          = hardenProcess
+	applyReadOnlyBindMountsFn = applyReadOnlyBindMounts
+	applyLandlockFn          = applyLandlock
+	applyResourceLimFn       = applyResourceLimits
+	applySeccompFn           = ApplySeccomp
+	syscallExecFn            = syscall.Exec
+	osExitFn                 = os.Exit
 )
 
 // reExecConfig is the configuration passed to the re-exec child via a pipe.
@@ -88,7 +89,9 @@ func sandboxInit(fdStr string) int {
 		return 1
 	}
 
-	// Apply Landlock filesystem restrictions.
+	// Apply read-only bind mounts for DenyWrite subpaths.
+	// This must be done before Landlock since mount operations require
+	// capabilities that Landlock may restrict.
 	wrapCfg := &platform.WrapConfig{
 		WritableRoots:           cfg.WritableRoots,
 		DenyWrite:               cfg.DenyWrite,
@@ -96,6 +99,12 @@ func sandboxInit(fdStr string) int {
 		NeedsNetworkRestriction: cfg.NeedsNetworkRestriction,
 		ResourceLimits:          cfg.ResourceLimits,
 	}
+	if err := applyReadOnlyBindMountsFn(wrapCfg); err != nil {
+		fmt.Fprintf(os.Stderr, "agentbox: bind mounts: %v\n", err)
+		return 1
+	}
+
+	// Apply Landlock filesystem restrictions.
 	if err := applyLandlockFn(wrapCfg); err != nil {
 		fmt.Fprintf(os.Stderr, "agentbox: landlock: %v\n", err)
 		return 1

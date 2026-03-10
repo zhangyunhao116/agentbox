@@ -303,6 +303,7 @@ func sandboxInitHelper(t *testing.T, cfg reExecConfig) int {
 // a restore function. Tests must defer the restore to avoid leaking mocks.
 func saveSandboxFnVars() func() {
 	origHarden := hardenProcessFn
+	origBindMounts := applyReadOnlyBindMountsFn
 	origLandlock := applyLandlockFn
 	origResLim := applyResourceLimFn
 	origSeccomp := applySeccompFn
@@ -310,6 +311,7 @@ func saveSandboxFnVars() func() {
 	origExit := osExitFn
 	return func() {
 		hardenProcessFn = origHarden
+		applyReadOnlyBindMountsFn = origBindMounts
 		applyLandlockFn = origLandlock
 		applyResourceLimFn = origResLim
 		applySeccompFn = origSeccomp
@@ -322,6 +324,7 @@ func saveSandboxFnVars() func() {
 // stubs. Call saveSandboxFnVars first and defer its restore.
 func stubAllSandboxFns() {
 	hardenProcessFn = func() error { return nil }
+	applyReadOnlyBindMountsFn = func(cfg *platform.WrapConfig) error { return nil }
 	applyLandlockFn = func(cfg *platform.WrapConfig) error { return nil }
 	applyResourceLimFn = func(limits *platform.ResourceLimits) error { return nil }
 	applySeccompFn = func() error { return nil }
@@ -525,5 +528,55 @@ func TestMaybeSandboxInit_WithEnvVar(t *testing.T) {
 	// result is true because osExitFn didn't actually exit.
 	if !result {
 		t.Error("MaybeSandboxInit() returned false, want true")
+	}
+}
+
+// TestSandboxInit_BindMountError verifies sandboxInit returns 1 when
+// applyReadOnlyBindMounts fails.
+func TestSandboxInit_BindMountError(t *testing.T) {
+	defer saveSandboxFnVars()()
+	stubAllSandboxFns()
+	applyReadOnlyBindMountsFn = func(cfg *platform.WrapConfig) error {
+		return errors.New("mock bind mount error")
+	}
+
+	code := sandboxInitHelper(t, reExecConfig{})
+	if code != 1 {
+		t.Errorf("sandboxInit() = %d, want 1", code)
+	}
+}
+
+// TestSandboxInit_BindMountBeforeLandlock verifies that bind mounts are applied
+// before Landlock in the sandboxInit sequence.
+func TestSandboxInit_BindMountBeforeLandlock(t *testing.T) {
+	defer saveSandboxFnVars()()
+	stubAllSandboxFns()
+
+	var order []string
+	applyReadOnlyBindMountsFn = func(cfg *platform.WrapConfig) error {
+		order = append(order, "bindmount")
+		return nil
+	}
+	applyLandlockFn = func(cfg *platform.WrapConfig) error {
+		order = append(order, "landlock")
+		return nil
+	}
+
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	os.Args = []string{"test-binary", "/bin/true"}
+
+	code := sandboxInitHelper(t, reExecConfig{})
+	if code != 0 {
+		t.Errorf("sandboxInit() = %d, want 0", code)
+	}
+	if len(order) != 2 {
+		t.Fatalf("expected 2 calls, got %d: %v", len(order), order)
+	}
+	if order[0] != "bindmount" {
+		t.Errorf("expected bindmount first, got %q", order[0])
+	}
+	if order[1] != "landlock" {
+		t.Errorf("expected landlock second, got %q", order[1])
 	}
 }
