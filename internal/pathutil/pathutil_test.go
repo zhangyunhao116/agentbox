@@ -661,6 +661,51 @@ func TestResolveGitWorktree_Parsing(t *testing.T) {
 			t.Errorf("expected 'invalid characters' error, got: %v", err)
 		}
 	})
+
+	t.Run("gitdir with embedded CR returns error", func(t *testing.T) {
+		dir := filepath.Join(tmp, "wt-cr")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gitFile := filepath.Join(dir, ".git")
+		// Embed a CR in the middle of the path (not at end, so TrimSpace won't remove it).
+		content := "gitdir: /some/pa\rth"
+		if err := os.WriteFile(gitFile, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := ResolveGitWorktree(dir)
+		if err == nil {
+			t.Fatal("expected error for gitdir with embedded CR byte")
+		}
+		if !strings.Contains(err.Error(), "invalid characters") {
+			t.Errorf("expected 'invalid characters' error, got: %v", err)
+		}
+	})
+
+	t.Run("CRLF line endings uses only first line", func(t *testing.T) {
+		dir := filepath.Join(tmp, "wt-crlf")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(tmp, "main-crlf", ".git", "worktrees", "wt-crlf")
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gitFile := filepath.Join(dir, ".git")
+		// Windows-style CRLF line endings; trailing \r must be stripped.
+		content := "gitdir: " + target + "\r\nextra-line: should-be-ignored\r\n"
+		if err := os.WriteFile(gitFile, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ResolveGitWorktree(dir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := resolveSymlinks(t, target)
+		if got != want {
+			t.Errorf("expected %q, got %q", want, got)
+		}
+	})
 }
 
 // TestResolveGitWorktree_PermissionError verifies that a non-ErrNotExist
