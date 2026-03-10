@@ -348,11 +348,20 @@ func (m *manager) buildWrapConfig(snap *configSnapshot, co *callOptions) *platfo
 	}
 	wcfg.DenyWrite = expandedDenyWrite
 
-	// Check for git worktree - if .git is a file (worktree), skip hooks/config denies
-	// since worktrees use a different .git layout.
+	// Check for git worktree - if .git is a file (worktree), skip hooks deny
+	// entries (worktrees use a different .git layout) and protect the resolved
+	// git directory.
 	for _, root := range wcfg.WritableRoots {
 		if pathutil.IsGitWorktree(root) {
 			wcfg.DenyWrite = filterOutPrefix(wcfg.DenyWrite, filepath.Join(root, ".git", "hooks"))
+
+			// Protect the actual git directory that the worktree points to.
+			gitdir, err := pathutil.ResolveGitWorktree(root)
+			if err != nil {
+				m.logger.Warn("failed to resolve git worktree", "root", root, "error", err)
+			} else if gitdir != "" {
+				wcfg.DenyWrite = append(wcfg.DenyWrite, gitdir)
+			}
 		}
 	}
 

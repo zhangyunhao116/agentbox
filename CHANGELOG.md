@@ -9,18 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **platform/linux**: Expand seccomp blocklist from 6 to ~34 dangerous syscalls (kexec, bpf, perf_event_open, namespace manipulation, kernel modules, chroot, keyring, clock modification, etc.), aligning with Docker's default profile.
-- **platform/linux**: Add `CLONE_NEWCGROUP` to namespace isolation flags for cgroup isolation.
-- **platform/linux**: Add environment variable sanitization in reexec sandbox — filters sensitive vars (`*_SECRET`, `*_PASSWORD`, `*_API_KEY`, `*_PRIVATE_KEY`, `*_TOKEN`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, etc.) before exec.
-- **platform/linux**: Restrict Landlock default readable system paths — replace broad `/etc`, `/proc`, `/dev` with granular sub-paths to reduce information exposure.
-- **platform/darwin**: Restrict sandbox UDP rule from wildcard `*:*` to DNS (port 53) and mDNS (port 5353) only, preventing DNS tunneling and unauthorized UDP access.
-- **classifier**: Add base64 decode pipe-to-shell detection (`base64 -d | sh` variants, including reordered flags).
-- **classifier**: Add `$IFS` word-splitting bypass detection with quote-awareness to reduce false positives.
+- **platform/linux**: Block `io_uring` syscalls (`io_uring_setup`, `io_uring_enter`, `io_uring_register`) in seccomp filter to prevent io_uring-based seccomp bypass.
+- **platform/linux**: Enforce `DenyWrite` subpath protection via read-only bind mounts within the mount namespace — prevents writes to paths like `.git/hooks` inside writable project directories.
+- **platform/linux**: Normalize `DenyWrite` paths with `filepath.Clean` in Landlock for consistent matching.
+- **platform/linux**: Resolve symlinks in bind-mount DenyWrite enforcement to prevent symlink-based bypass.
+- **internal/pathutil**: Add `ResolveGitWorktree()` to parse `.git` worktree files and resolve the actual git directory path.
+- **manager**: Protect git worktree target directories — resolved `gitdir:` paths are added to `DenyWrite` for both macOS (Seatbelt) and Linux (Landlock + bind mount) enforcement.
 
 ### Documentation
 
-- **design/07-security-audit.md**: Update resolution status for all issues; mark 8 items as resolved.
-- **design/08-security-gap-analysis.md**: New document — consolidated list of 12 remaining security gaps with priority, fix guidance, and recommended action order.
+- **design/06-windows-wsl-sandbox.md**: Add dependency strategy (§15), proxy bind address fix (§6.2.0), and updated industry comparisons (Appendix D).
 
 ### Changed
 

@@ -1534,9 +1534,15 @@ func TestBuildWrapConfigNonGlobPathPreserved(t *testing.T) {
 func TestBuildWrapConfigGitWorktree(t *testing.T) {
 	tmpDir := t.TempDir()
 
+	// Create the target gitdir directory so ResolveGitWorktree can resolve it.
+	gitdirTarget := filepath.Join(tmpDir, "main-repo", ".git", "worktrees", "feature")
+	if err := os.MkdirAll(gitdirTarget, 0o755); err != nil {
+		t.Fatalf("MkdirAll error: %v", err)
+	}
+
 	// Create a .git file (not directory) to simulate a worktree.
 	gitFile := filepath.Join(tmpDir, ".git")
-	if err := os.WriteFile(gitFile, []byte("gitdir: /some/other/path"), 0o644); err != nil {
+	if err := os.WriteFile(gitFile, []byte("gitdir: "+gitdirTarget), 0o644); err != nil {
 		t.Fatalf("WriteFile error: %v", err)
 	}
 
@@ -1577,6 +1583,23 @@ func TestBuildWrapConfigGitWorktree(t *testing.T) {
 	}
 	if !foundEtc {
 		t.Error("DenyWrite should still contain /etc")
+	}
+
+	// The resolved gitdir path should be added to DenyWrite.
+	// EvalSymlinks resolves platform symlinks (e.g., /var → /private/var on macOS).
+	expectedGitdir := gitdirTarget
+	if resolved, err := filepath.EvalSymlinks(gitdirTarget); err == nil {
+		expectedGitdir = resolved
+	}
+	foundGitdir := false
+	for _, p := range wcfg.DenyWrite {
+		if p == expectedGitdir {
+			foundGitdir = true
+			break
+		}
+	}
+	if !foundGitdir {
+		t.Errorf("DenyWrite should contain resolved gitdir %q, got %v", expectedGitdir, wcfg.DenyWrite)
 	}
 }
 

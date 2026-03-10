@@ -84,6 +84,11 @@ type seccompSyscalls struct {
 	sysBpf           uint32
 	sysUserfaultfd   uint32
 
+	// io_uring — async I/O that can bypass seccomp filtering.
+	sysIoUringSetup    uint32
+	sysIoUringEnter    uint32
+	sysIoUringRegister uint32
+
 	// Namespace / filesystem escape.
 	sysOpenByHandleAt uint32
 	sysSetns          uint32
@@ -144,6 +149,10 @@ func seccompSyscallsFor(goarch string) (seccompSyscalls, error) {
 			sysBpf:           321,
 			sysUserfaultfd:   323,
 
+			sysIoUringSetup:    425,
+			sysIoUringEnter:    426,
+			sysIoUringRegister: 427,
+
 			sysOpenByHandleAt: 304,
 			sysSetns:          308,
 			sysUnshare:        272,
@@ -186,6 +195,10 @@ func seccompSyscallsFor(goarch string) (seccompSyscalls, error) {
 			sysPerfEventOpen: 241,
 			sysBpf:           280,
 			sysUserfaultfd:   282,
+
+			sysIoUringSetup:    425,
+			sysIoUringEnter:    426,
+			sysIoUringRegister: 427,
 
 			sysOpenByHandleAt: 265,
 			sysSetns:          268,
@@ -248,6 +261,9 @@ func buildSeccompFilter(sc seccompSyscalls) []sockFilter {
 		sc.sysPerfEventOpen,
 		sc.sysBpf,
 		sc.sysUserfaultfd,
+		sc.sysIoUringSetup,
+		sc.sysIoUringEnter,
+		sc.sysIoUringRegister,
 		sc.sysOpenByHandleAt,
 		sc.sysSetns,
 		sc.sysUnshare,
@@ -335,7 +351,7 @@ func buildSeccompFilter(sc seccompSyscalls) []sockFilter {
 // ApplySeccomp applies a seccomp BPF filter that blocks AF_UNIX socket
 // creation and dangerous syscalls including ptrace, mount/umount, reboot,
 // swap management, device node creation, kernel module loading, kexec,
-// BPF, perf_event_open, namespace manipulation, chroot/pivot_root,
+// BPF, perf_event_open, io_uring, namespace manipulation, chroot/pivot_root,
 // keyring operations, and clock modification. This prevents the sandboxed
 // process from escaping its confinement or performing privileged operations.
 func ApplySeccomp() error {

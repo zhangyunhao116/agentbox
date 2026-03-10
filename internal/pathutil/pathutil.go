@@ -4,6 +4,7 @@
 package pathutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -277,6 +278,50 @@ func IsGitWorktree(dir string) bool {
 		return false
 	}
 	return !info.IsDir()
+}
+
+// ResolveGitWorktree reads the .git file in dir (which must be a worktree)
+// and returns the resolved gitdir path. Returns ("", nil) if dir is not a
+// worktree. Returns an error if the .git file exists but cannot be parsed.
+func ResolveGitWorktree(dir string) (string, error) {
+	gitPath := filepath.Join(dir, ".git")
+	info, err := os.Lstat(gitPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("pathutil: stat .git: %w", err)
+	}
+	if info.IsDir() {
+		return "", nil // Not a worktree (regular git repo)
+	}
+
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return "", fmt.Errorf("pathutil: read .git file: %w", err)
+	}
+
+	content := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(content, "gitdir: ") {
+		return "", errors.New("pathutil: .git file does not contain gitdir: prefix")
+	}
+
+	gitdir := strings.TrimPrefix(content, "gitdir: ")
+	gitdir = strings.TrimSpace(gitdir)
+
+	// Resolve relative paths against the worktree directory.
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(dir, gitdir)
+	}
+	gitdir = filepath.Clean(gitdir)
+
+	// Resolve symlinks so that the returned path matches what bind-mount
+	// and Landlock enforcement will see at the filesystem level.
+	if resolved, err := filepath.EvalSymlinks(gitdir); err == nil {
+		gitdir = resolved
+	}
+
+	return gitdir, nil
 }
 
 // ---------------------------------------------------------------------------

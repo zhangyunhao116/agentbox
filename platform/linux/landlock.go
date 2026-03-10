@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"unsafe"
 
@@ -68,6 +69,25 @@ type landlockPathBeneathAttr struct {
 	allowedAccess uint64
 	parentFd      int32
 	_             [4]byte // padding
+}
+
+// systemReadPaths lists common system paths that should be granted read access.
+// Granular paths for /etc, /proc, and /dev avoid exposing entire directories.
+var systemReadPaths = []string{
+	// Executables and shared libraries.
+	"/usr", "/lib", "/lib64", "/bin", "/sbin",
+	// Granular /etc paths for linker, DNS, TLS, and identity.
+	"/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
+	"/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf",
+	"/etc/ssl", "/etc/ca-certificates", "/etc/pki",
+	"/etc/alternatives", "/etc/localtime", "/etc/timezone",
+	"/etc/passwd", "/etc/group",
+	// Granular /proc paths for process introspection.
+	"/proc/self/status", "/proc/self/fd", "/proc/self/exe", "/proc/self/maps",
+	// Granular /dev paths for standard I/O devices.
+	"/dev/null", "/dev/zero", "/dev/urandom", "/dev/random",
+	"/dev/stdin", "/dev/stdout", "/dev/stderr",
+	"/dev/fd", "/dev/pts", "/dev/shm",
 }
 
 // LandlockInfo describes Landlock support on the current kernel.
@@ -135,18 +155,6 @@ func applyLandlock(cfg *platform.WrapConfig) error {
 		handledAccess |= accessFSTruncate
 	}
 
-	// Create the ruleset.
-	attr := landlockRulesetAttr{handledAccessFS: handledAccess}
-	rulesetFd, _, errno := landlockCreateRulesetFn(
-		uintptr(unsafe.Pointer(&attr)),
-		unsafe.Sizeof(attr),
-		0,
-	)
-	if errno != 0 {
-		return fmt.Errorf("landlock_create_ruleset: %w", errno)
-	}
-	defer func() { _ = closePathFn(int(rulesetFd)) }()
-
 	// writeAccess is the set of access rights granted to writable paths.
 	writeAccess := uint64(accessFSWriteFile | accessFSReadFile | accessFSReadDir |
 		accessFSRemoveDir | accessFSRemoveFile | accessFSMakeDir |
@@ -161,13 +169,31 @@ func applyLandlock(cfg *platform.WrapConfig) error {
 	// readAccess is the set of access rights granted to read-only paths.
 	readAccess := uint64(accessFSExecute | accessFSReadFile | accessFSReadDir)
 
+	// Build a set of DenyRead paths to exclude from readable ruleset.
+	denyReadSet := make(map[string]bool, len(cfg.DenyRead))
+	for _, p := range cfg.DenyRead {
+		denyReadSet[p] = true
+	}
+
+	// Create the ruleset.
+	attr := landlockRulesetAttr{handledAccessFS: handledAccess}
+	rulesetFd, _, errno := landlockCreateRulesetFn(
+		uintptr(unsafe.Pointer(&attr)),
+		unsafe.Sizeof(attr),
+		0,
+	)
+	if errno != 0 {
+		return fmt.Errorf("landlock_create_ruleset: %w", errno)
+	}
+	defer func() { _ = closePathFn(int(rulesetFd)) }()
+
 	// Add rules for writable roots (skip paths in DenyWrite).
 	denyWriteSet := make(map[string]bool, len(cfg.DenyWrite))
 	for _, p := range cfg.DenyWrite {
-		denyWriteSet[p] = true
+		denyWriteSet[filepath.Clean(p)] = true
 	}
 	for _, path := range cfg.WritableRoots {
-		if denyWriteSet[path] {
+		if denyWriteSet[filepath.Clean(path)] {
 			// Add as read-only instead of writable.
 			if err := landlockAddPathRule(int(rulesetFd), path, readAccess); err != nil {
 				return fmt.Errorf("landlock add read-only rule for denied-write %q: %w", path, err)
@@ -179,31 +205,9 @@ func applyLandlock(cfg *platform.WrapConfig) error {
 		}
 	}
 
-	// Build a set of DenyRead paths to exclude from readable ruleset.
-	denyReadSet := make(map[string]bool, len(cfg.DenyRead))
-	for _, p := range cfg.DenyRead {
-		denyReadSet[p] = true
-	}
-
 	// Allow read access to common system paths (skip DenyRead paths).
 	// Use granular paths for /etc, /proc, and /dev rather than exposing
 	// everything under those directories.
-	systemReadPaths := []string{
-		// Executables and shared libraries.
-		"/usr", "/lib", "/lib64", "/bin", "/sbin",
-		// Granular /etc paths for linker, DNS, TLS, and identity.
-		"/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
-		"/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf",
-		"/etc/ssl", "/etc/ca-certificates", "/etc/pki",
-		"/etc/alternatives", "/etc/localtime", "/etc/timezone",
-		"/etc/passwd", "/etc/group",
-		// Granular /proc paths for process introspection.
-		"/proc/self/status", "/proc/self/fd", "/proc/self/exe", "/proc/self/maps",
-		// Granular /dev paths for standard I/O devices.
-		"/dev/null", "/dev/zero", "/dev/urandom", "/dev/random",
-		"/dev/stdin", "/dev/stdout", "/dev/stderr",
-		"/dev/fd", "/dev/pts", "/dev/shm",
-	}
 	for _, path := range systemReadPaths {
 		if denyReadSet[path] {
 			continue
@@ -256,3 +260,4 @@ func landlockAddPathRule(rulesetFd int, path string, allowedAccess uint64) error
 
 	return nil
 }
+
