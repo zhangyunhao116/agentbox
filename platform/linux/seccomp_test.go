@@ -622,6 +622,10 @@ func TestApplySeccomp_BlocksIoUring(t *testing.T) {
 		return
 	}
 
+	if _, err := seccompSyscallsFor(runtime.GOARCH); err != nil {
+		t.Skipf("unsupported architecture: %s", runtime.GOARCH)
+	}
+
 	result := runSeccompSubprocess(t, "TestApplySeccomp_BlocksIoUring")
 	if strings.Contains(result, "RESULT:ERROR") {
 		t.Fatal(result)

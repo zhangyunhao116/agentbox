@@ -805,18 +805,24 @@ httpAddr, err := p.http.ListenAndServe("127.0.0.1:0")
 httpAddr, err := p.http.ListenAndServe("0.0.0.0:0")
 ```
 
-> **Security:** Binding to `0.0.0.0` exposes the proxy on the local network. The Windows platform must add Windows Firewall rules restricting access to the WSL2 virtual subnet only:
+> **Security:** Binding to `0.0.0.0` exposes the proxy on the local network. The Windows platform must add Windows Firewall rules restricting access to the WSL2 virtual subnet only. The subnet address must be discovered at runtime (e.g., from the WSL vEthernet adapter) rather than using a static RFC 1918 range, to avoid accidentally permitting access from other machines on a corporate network that shares the same RFC 1918 space:
 >
 > ```powershell
+> # Discover the actual WSL vEthernet subnet at runtime
+> $wslIP = (Get-NetIPAddress -InterfaceAlias "vEthernet (WSL*)" `
+>     -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+>     Select-Object -First 1).IPAddress
+> $wslSubnet = "$($wslIP -replace '\.\d+$', '.0')/24"   # e.g. 172.21.48.0/24
+>
 > # Block all inbound to proxy port (safety net)
 > New-NetFirewallRule -DisplayName "agentbox-proxy-block-$PORT" `
 >     -Direction Inbound -LocalPort $PORT -Protocol TCP `
 >     -Action Block
 >
-> # Allow only WSL subnet (higher priority overrides block)  
+> # Allow only the specific WSL vEthernet subnet (higher priority overrides block)
 > New-NetFirewallRule -DisplayName "agentbox-proxy-allow-wsl-$PORT" `
 >     -Direction Inbound -LocalPort $PORT -Protocol TCP `
->     -RemoteAddress 172.16.0.0/12 -Action Allow
+>     -RemoteAddress $wslSubnet -Action Allow
 > ```
 >
 > Rules are named with the port number for uniqueness. On startup, the proxy implementation should clean up any stale `agentbox-proxy-*` rules from previous crashed sessions before creating new ones. The firewall rule is created when the proxy starts and removed on cleanup.

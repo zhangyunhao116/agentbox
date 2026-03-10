@@ -304,9 +304,9 @@ func TestApplyReadOnlyBindMounts_Success(t *testing.T) {
 	if mountCalls[2].target != "/project/.git/hooks" {
 		t.Errorf("remount target = %q, want %q", mountCalls[2].target, "/project/.git/hooks")
 	}
-	expectedRemountFlags := uintptr(syscall.MS_REMOUNT | syscall.MS_BIND | syscall.MS_RDONLY)
+	expectedRemountFlags := uintptr(syscall.MS_REMOUNT | syscall.MS_BIND | syscall.MS_REC | syscall.MS_RDONLY)
 	if mountCalls[2].flags != expectedRemountFlags {
-		t.Errorf("remount flags = %d, want %d (MS_REMOUNT|MS_BIND|MS_RDONLY)", mountCalls[2].flags, expectedRemountFlags)
+		t.Errorf("remount flags = %d, want %d (MS_REMOUNT|MS_BIND|MS_REC|MS_RDONLY)", mountCalls[2].flags, expectedRemountFlags)
 	}
 }
 

@@ -54,9 +54,10 @@ func applyReadOnlyBindMounts(cfg *platform.WrapConfig) error {
 		if err := mountFn(target, target, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
 			return fmt.Errorf("bind mount %q: %w", target, err)
 		}
-		// Remount as read-only. MS_REMOUNT|MS_BIND|MS_RDONLY makes the
-		// bind mount read-only without affecting the underlying filesystem.
-		if err := mountFn("", target, "", syscall.MS_REMOUNT|syscall.MS_BIND|syscall.MS_RDONLY, ""); err != nil {
+		// Remount as read-only. MS_REMOUNT|MS_BIND|MS_REC|MS_RDONLY makes
+		// the bind mount read-only including any nested submounts, so that
+		// nested mount points cannot be used to bypass DenyWrite enforcement.
+		if err := mountFn("", target, "", syscall.MS_REMOUNT|syscall.MS_BIND|syscall.MS_REC|syscall.MS_RDONLY, ""); err != nil {
 			return fmt.Errorf("remount read-only %q: %w", target, err)
 		}
 	}
