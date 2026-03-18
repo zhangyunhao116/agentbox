@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/zhangyunhao116/agentbox/platform"
+	"github.com/zhangyunhao116/agentbox/testutil"
 )
 
 // isStubWrapError returns true if the error is from the built-in platform stub
@@ -22,6 +24,13 @@ func isStubWrapError(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "built-in stub does not implement WrapCommand") ||
 		strings.Contains(s, "test-stub: WrapCommand not implemented")
+}
+
+// evalTempDir resolves symlinks in dir so that assertions comparing the
+// output of pwd/cd to the expected directory work on macOS (where /tmp is a
+// symlink to /private/tmp) and similar setups.
+func evalTempDir(dir string) (string, error) {
+	return filepath.EvalSymlinks(dir)
 }
 
 func TestManagerWrapForbiddenCommand(t *testing.T) {
@@ -246,7 +255,7 @@ func TestOptionMerging(t *testing.T) {
 
 	// Use WithShell to override the shell for a single call.
 	result, err := mgr.Exec(context.Background(), "echo merged",
-		WithShell("/bin/sh"),
+		WithShell(testutil.Shell()),
 	)
 	if isStubWrapError(err) {
 		t.Skip("skipping: platform stub does not implement WrapCommand")
@@ -619,17 +628,25 @@ func TestManagerExecWithWorkingDir(t *testing.T) {
 	}
 	defer mgr.Cleanup(context.Background())
 
-	result, err := mgr.Exec(context.Background(), "pwd", WithWorkingDir("/tmp"))
+	tmpDir := testutil.TempDir()
+	shell, args := testutil.PwdCommand()
+	result, err := mgr.ExecArgs(context.Background(), shell, args,
+		WithWorkingDir(tmpDir),
+	)
 	if isStubWrapError(err) {
 		t.Skip("skipping: platform stub does not implement WrapCommand")
 	}
 	if err != nil {
-		t.Fatalf("Exec() error: %v", err)
+		t.Fatalf("ExecArgs() error: %v", err)
 	}
 	got := strings.TrimSpace(result.Stdout)
-	// On macOS, /tmp is a symlink to /private/tmp.
-	if got != "/tmp" && got != "/private/tmp" {
-		t.Errorf("Stdout = %q, want /tmp or /private/tmp", got)
+	// Resolve symlinks so macOS /tmp -> /private/tmp (and similar) matches.
+	wantResolved, resolveErr := evalTempDir(tmpDir)
+	if resolveErr != nil {
+		t.Fatalf("failed to resolve temp dir symlinks: %v", resolveErr)
+	}
+	if got != tmpDir && got != wantResolved {
+		t.Errorf("Stdout = %q, want %q or %q", got, tmpDir, wantResolved)
 	}
 }
 
@@ -643,8 +660,10 @@ func TestManagerExecArgsWithWorkingDir(t *testing.T) {
 	}
 	defer mgr.Cleanup(context.Background())
 
-	result, err := mgr.ExecArgs(context.Background(), "/bin/sh", []string{"-c", "pwd"},
-		WithWorkingDir("/tmp"),
+	tmpDir := testutil.TempDir()
+	shell, args := testutil.PwdCommand()
+	result, err := mgr.ExecArgs(context.Background(), shell, args,
+		WithWorkingDir(tmpDir),
 	)
 	if isStubWrapError(err) {
 		t.Skip("skipping: platform stub does not implement WrapCommand")
@@ -653,8 +672,13 @@ func TestManagerExecArgsWithWorkingDir(t *testing.T) {
 		t.Fatalf("ExecArgs() error: %v", err)
 	}
 	got := strings.TrimSpace(result.Stdout)
-	if got != "/tmp" && got != "/private/tmp" {
-		t.Errorf("Stdout = %q, want /tmp or /private/tmp", got)
+	// Resolve symlinks so macOS /tmp -> /private/tmp (and similar) matches.
+	wantResolved, resolveErr := evalTempDir(tmpDir)
+	if resolveErr != nil {
+		t.Fatalf("failed to resolve temp dir symlinks: %v", resolveErr)
+	}
+	if got != tmpDir && got != wantResolved {
+		t.Errorf("Stdout = %q, want %q or %q", got, tmpDir, wantResolved)
 	}
 }
 
@@ -723,6 +747,7 @@ func TestManagerExecArgsWithTimeout(t *testing.T) {
 func TestRunCommandNonExitError(t *testing.T) {
 	useStubPlatform(t)
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	cfg.FallbackPolicy = FallbackWarn
 	mgr, err := NewManager(cfg)
 	if err != nil {
@@ -751,6 +776,7 @@ func TestManagerExecFailClosedDefault(t *testing.T) {
 	defer func() { detectPlatformFn = origDetect }()
 
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	cfg.FallbackPolicy = FallbackStrict
 	_, err := newManager(cfg)
 	if err == nil {
@@ -773,9 +799,13 @@ func TestManagerExecFallbackWarnContinues(t *testing.T) {
 	}
 	defer mgr.Cleanup(context.Background())
 
-	result, err := mgr.Exec(context.Background(), "echo fallback_test")
+	// Use ExecArgs with testutil.EchoCommand for cross-platform compatibility.
+	// On Windows, Exec() invokes the shell (cmd.exe) which may include
+	// banner output; ExecArgs avoids this issue.
+	shell, args := testutil.EchoCommand("fallback_test")
+	result, err := mgr.ExecArgs(context.Background(), shell, args)
 	if err != nil {
-		t.Fatalf("Exec() error: %v", err)
+		t.Fatalf("ExecArgs() error: %v", err)
 	}
 	if got := strings.TrimSpace(result.Stdout); got != "fallback_test" {
 		t.Errorf("Stdout = %q, want %q", got, "fallback_test")

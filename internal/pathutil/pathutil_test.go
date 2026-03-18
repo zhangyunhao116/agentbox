@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/zhangyunhao116/agentbox/testutil"
 )
 
 // ---------------------------------------------------------------------------
@@ -90,6 +92,9 @@ func TestIsSymlinkOutsideBoundary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "root original" {
+				testutil.SkipIfWindows(t, "Unix-specific path boundary semantics")
+			}
 			got := IsSymlinkOutsideBoundary(tt.original, tt.resolved)
 			if got != tt.want {
 				t.Errorf("IsSymlinkOutsideBoundary(%q, %q) = %v, want %v",
@@ -317,6 +322,7 @@ func TestExpandGlob(t *testing.T) {
 	mkFile(t, tmp, "sub/deep/d.txt")
 
 	t.Run("star pattern", func(t *testing.T) {
+		testutil.SkipIfWindows(t, "glob regex uses Unix path separators")
 		matches, err := ExpandGlob(filepath.Join(tmp, "*.txt"), 0)
 		if err != nil {
 			t.Fatal(err)
@@ -327,6 +333,7 @@ func TestExpandGlob(t *testing.T) {
 	})
 
 	t.Run("double star pattern", func(t *testing.T) {
+		testutil.SkipIfWindows(t, "glob regex uses Unix path separators")
 		matches, err := ExpandGlob(filepath.Join(tmp, "**", "*.txt"), 0)
 		if err != nil {
 			t.Fatal(err)
@@ -388,6 +395,7 @@ func TestExpandGlob(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestScanDangerousFiles(t *testing.T) {
+	testutil.SkipIfWindows(t, "dangerous file detection uses Unix-specific dotfile patterns")
 	tmp := t.TempDir()
 
 	// Create some dangerous files.
@@ -666,9 +674,7 @@ func TestResolveGitWorktree_Parsing(t *testing.T) {
 // TestResolveGitWorktree_PermissionError verifies that a non-ErrNotExist
 // error from Lstat (e.g., EACCES) is propagated instead of silently ignored.
 func TestResolveGitWorktree_PermissionError(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission-based test not reliable on Windows")
-	}
+	testutil.SkipIfWindows(t, "permission-based test not reliable on Windows")
 	if os.Getuid() == 0 {
 		t.Skip("cannot test permission errors as root")
 	}
@@ -798,9 +804,7 @@ func TestStripNullBytes(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSymlinkBoundaryWithRealFS(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink tests not reliable on Windows")
-	}
+	testutil.SkipIfWindows(t, "symlink tests not reliable on Windows")
 
 	tmp := t.TempDir()
 	sub := filepath.Join(tmp, "sub")
@@ -922,6 +926,7 @@ func TestExpandGlob_InaccessibleDir(t *testing.T) {
 }
 
 func TestScanDangerousFiles_InaccessibleDir(t *testing.T) {
+	testutil.SkipIfWindows(t, "Unix file permissions do not apply on Windows")
 	if os.Getuid() == 0 {
 		t.Skip("skipping permission test when running as root")
 	}
@@ -1047,9 +1052,7 @@ func mkDir(t *testing.T, base, rel string) {
 // by removing the current working directory so that os.Getwd (called
 // internally by filepath.Abs for relative paths) fails.
 func TestScanDangerousFiles_AbsError(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("cannot remove CWD on Windows")
-	}
+	testutil.SkipIfWindows(t, "cannot remove CWD on Windows")
 	if runtime.GOOS == "darwin" {
 		t.Skip("filepath.Abs does not fail on macOS when CWD is deleted")
 	}

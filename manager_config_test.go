@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/zhangyunhao116/agentbox/platform"
+	"github.com/zhangyunhao116/agentbox/testutil"
 )
 
 // TestManagerUpdateConfig verifies that a valid config update succeeds.
@@ -176,7 +177,9 @@ func TestNewManagerNetworkBlocked(t *testing.T) {
 // TestNewManagerCustomShell verifies that a custom shell is preserved.
 func TestNewManagerCustomShell(t *testing.T) {
 	cfg := newTestConfig(t)
-	cfg.Shell = "/bin/bash"
+	// Use testutil.Shell() which returns an existing shell on all platforms.
+	customShell := testutil.Shell()
+	cfg.Shell = customShell
 
 	mgr, err := newManager(cfg)
 	if err != nil {
@@ -185,8 +188,8 @@ func TestNewManagerCustomShell(t *testing.T) {
 	defer mgr.Cleanup(context.Background())
 
 	m := mgr.(*manager)
-	if m.cfg.Shell != "/bin/bash" {
-		t.Errorf("Shell = %q, want /bin/bash", m.cfg.Shell)
+	if m.cfg.Shell != customShell {
+		t.Errorf("Shell = %q, want %q", m.cfg.Shell, customShell)
 	}
 }
 
@@ -197,6 +200,9 @@ func TestNewManagerRelativeWritableRoots(t *testing.T) {
 	cfg.Network.Mode = NetworkAllowed
 	relDir := t.TempDir()
 	cfg.Filesystem.WritableRoots = []string{relDir}
+	// Clear DenyWrite: on Windows t.TempDir() is under the home directory
+	// which is in the default DenyWrite list, causing a validation conflict.
+	cfg.Filesystem.DenyWrite = nil
 
 	mgr, err := newManager(cfg)
 	if err != nil {
@@ -333,7 +339,10 @@ func TestBuildWrapConfigPerCallNetworkOverride(t *testing.T) {
 func TestBuildWrapConfigPerCallWritableRoots(t *testing.T) {
 	cfg := newTestConfig(t)
 	cfg.Network.Mode = NetworkAllowed
-	cfg.Filesystem.WritableRoots = []string{"/tmp"}
+	cfg.Filesystem.WritableRoots = []string{testutil.TempDir()}
+	// Clear DenyWrite: on Windows os.TempDir() is under the home directory
+	// which conflicts with the default DenyWrite list.
+	cfg.Filesystem.DenyWrite = nil
 
 	mgr, err := newManager(cfg)
 	if err != nil {
@@ -342,26 +351,33 @@ func TestBuildWrapConfigPerCallWritableRoots(t *testing.T) {
 	defer mgr.Cleanup(context.Background())
 
 	m := mgr.(*manager)
+
+	// Use a per-call writable root that exists on all platforms.
+	perCallRoot := t.TempDir()
 	co := &callOptions{
-		writableRoots: []string{"/var"},
+		writableRoots: []string{perCallRoot},
 	}
 	wcfg := m.buildWrapConfig(&configSnapshot{cfg: *m.cfg}, co)
 
-	// On macOS, /var is a symlink to /private/var, so resolve it.
-	expectedVar := "/var"
-	if resolved, err := filepath.EvalSymlinks("/var"); err == nil {
-		expectedVar = resolved
+	// The per-call root should appear in WritableRoots.
+	// buildWrapConfig attempts symlink resolution via ResolveWithBoundaryCheck;
+	// on macOS /var -> /private/var causes a boundary escape, so the original
+	// path is kept. Check for both the original and the resolved form.
+	expectedRoot := perCallRoot
+	resolved, err := filepath.EvalSymlinks(perCallRoot)
+	if err != nil {
+		resolved = perCallRoot
 	}
 
 	found := false
 	for _, root := range wcfg.WritableRoots {
-		if root == expectedVar {
+		if root == expectedRoot || root == resolved {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("per-call writable root %q should be in WrapConfig.WritableRoots, got %v", expectedVar, wcfg.WritableRoots)
+		t.Errorf("per-call writable root %q (or %q) should be in WrapConfig.WritableRoots, got %v", expectedRoot, resolved, wcfg.WritableRoots)
 	}
 }
 
@@ -465,8 +481,10 @@ func TestManagerUpdateConfigShell(t *testing.T) {
 	}
 	defer mgr.Cleanup(context.Background())
 
+	// Use testutil.Shell() which returns an existing shell on all platforms.
+	customShell := testutil.Shell()
 	newCfg := newTestConfig(t)
-	newCfg.Shell = "/bin/bash"
+	newCfg.Shell = customShell
 	newCfg.ResourceLimits = DefaultResourceLimits()
 
 	err = mgr.UpdateConfig(newCfg)
@@ -478,8 +496,8 @@ func TestManagerUpdateConfigShell(t *testing.T) {
 	m.mu.Lock()
 	got := m.cfg.Shell
 	m.mu.Unlock()
-	if got != "/bin/bash" {
-		t.Errorf("Shell after UpdateConfig = %q, want /bin/bash", got)
+	if got != customShell {
+		t.Errorf("Shell after UpdateConfig = %q, want %q", got, customShell)
 	}
 }
 
@@ -680,6 +698,9 @@ func TestManagerUpdateConfigNormalizesRelativePaths(t *testing.T) {
 	newCfg := newTestConfig(t)
 	tmpDir := t.TempDir()
 	newCfg.Filesystem.WritableRoots = []string{tmpDir}
+	// Clear DenyWrite: on Windows t.TempDir() is under the home directory
+	// which conflicts with the default DenyWrite list.
+	newCfg.Filesystem.DenyWrite = nil
 
 	err = mgr.UpdateConfig(newCfg)
 	if err != nil {
@@ -777,9 +798,10 @@ func TestNewManagerDeepCopySlices(t *testing.T) {
 	denyRead := []string{"/secret"}
 	allowedDomains := []string{"example.com"}
 	deniedDomains := []string{"evil.com"}
-	writableRoots := []string{"/tmp"}
+	writableRoots := []string{testutil.TempDir()}
 
 	cfg := &Config{
+		Shell: testutil.Shell(),
 		Filesystem: FilesystemConfig{
 			WritableRoots: writableRoots,
 			DenyWrite:     denyWrite,
@@ -939,8 +961,9 @@ func TestBuildWrapConfigDenyWriteMerge(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNewManagerNonexistentShellError(t *testing.T) {
+	shellPath := filepath.Join(testutil.TempDir(), "nonexistent", "shell", "that", "does", "not", "exist")
 	cfg := &Config{
-		Shell: "/nonexistent/shell/that/does/not/exist",
+		Shell: shellPath,
 	}
 	_, err := newManager(cfg)
 	if err == nil {
@@ -966,8 +989,11 @@ func TestManagerUpdateConfigNonexistentShell(t *testing.T) {
 	}
 	defer mgr.Cleanup(context.Background())
 
+	// Use an absolute path that doesn't exist on any platform.
+	// filepath.Join(os.TempDir(), ...) is absolute on both Unix and Windows.
+	nonexistentShell := filepath.Join(os.TempDir(), "nonexistent-shell-path-that-does-not-exist")
 	newCfg := newTestConfig(t)
-	newCfg.Shell = "/nonexistent/shell/path"
+	newCfg.Shell = nonexistentShell
 
 	err = mgr.UpdateConfig(newCfg)
 	if err == nil {
@@ -1086,6 +1112,7 @@ func TestNewManagerProxyFilterError(t *testing.T) {
 	t.Cleanup(func() { detectPlatformFn = origDetect })
 
 	cfg := &Config{
+		Shell: testutil.Shell(),
 		Network: NetworkConfig{
 			Mode: NetworkFiltered,
 			// "example.com:8080" passes root-level validation but fails
@@ -1165,6 +1192,9 @@ func TestBuildWrapConfigSymlinkResolution(t *testing.T) {
 	cfg := newTestConfig(t)
 	cfg.Network.Mode = NetworkAllowed
 	cfg.Filesystem.WritableRoots = []string{linkDir}
+	// Clear DenyWrite: on Windows t.TempDir() is under the home directory
+	// which conflicts with the default DenyWrite list.
+	cfg.Filesystem.DenyWrite = nil
 
 	mgr, err := newManager(cfg)
 	if err != nil {
@@ -1205,6 +1235,9 @@ func TestBuildWrapConfigSymlinkResolutionBroken(t *testing.T) {
 	cfg := newTestConfig(t)
 	cfg.Network.Mode = NetworkAllowed
 	cfg.Filesystem.WritableRoots = []string{brokenLink}
+	// Clear DenyWrite: on Windows t.TempDir() is under the home directory
+	// which conflicts with the default DenyWrite list.
+	cfg.Filesystem.DenyWrite = nil
 
 	mgr, err := newManager(cfg)
 	if err != nil {
@@ -1253,6 +1286,9 @@ func TestBuildWrapConfigDangerousFileScanning(t *testing.T) {
 	cfg.Filesystem.WritableRoots = []string{tmpDir}
 	cfg.Filesystem.AutoProtectDangerousFiles = true
 	cfg.Filesystem.DangerousFileScanDepth = 3
+	// Clear DenyWrite: on Windows t.TempDir() is under the home directory
+	// which conflicts with the default DenyWrite list.
+	cfg.Filesystem.DenyWrite = nil
 
 	mgr, err := newManager(cfg)
 	if err != nil {
@@ -1296,6 +1332,9 @@ func TestBuildWrapConfigDangerousFileScanningDisabled(t *testing.T) {
 	cfg.Network.Mode = NetworkAllowed
 	cfg.Filesystem.WritableRoots = []string{tmpDir}
 	cfg.Filesystem.AutoProtectDangerousFiles = false
+	// Clear DenyWrite: on Windows t.TempDir() is under the home directory
+	// which conflicts with the default DenyWrite list.
+	cfg.Filesystem.DenyWrite = nil
 
 	mgr, err := newManager(cfg)
 	if err != nil {
@@ -1335,6 +1374,9 @@ func TestBuildWrapConfigDangerousFileScanDefaultDepth(t *testing.T) {
 	cfg.Filesystem.WritableRoots = []string{tmpDir}
 	cfg.Filesystem.AutoProtectDangerousFiles = true
 	cfg.Filesystem.DangerousFileScanDepth = 0 // should use default of 5
+	// Clear DenyWrite: on Windows t.TempDir() is under the home directory
+	// which conflicts with the default DenyWrite list.
+	cfg.Filesystem.DenyWrite = nil
 
 	mgr, err := newManager(cfg)
 	if err != nil {
@@ -1898,7 +1940,7 @@ func TestNopManagerUpdateConfigApprovalCallback(t *testing.T) {
 
 	// Update config with an approval callback.
 	newCfg := &Config{
-		Shell: "/bin/sh",
+		Shell: testutil.Shell(),
 		ApprovalCallback: func(ctx context.Context, req ApprovalRequest) (ApprovalDecision, error) {
 			return Approve, nil
 		},

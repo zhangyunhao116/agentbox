@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/zhangyunhao116/agentbox/platform"
+	"github.com/zhangyunhao116/agentbox/testutil"
 )
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ func useUnavailablePlatform(t *testing.T) {
 // ===========================================================================
 
 func TestWrapConvenienceSuccess(t *testing.T) {
+	testutil.SkipIfWindows(t, "convenience functions use hardcoded /bin/sh")
 	useNopPassthroughPlatform(t)
 
 	ctx := context.Background()
@@ -105,6 +107,7 @@ func TestWrapConvenienceWrapError(t *testing.T) {
 }
 
 func TestExecConvenienceSuccess(t *testing.T) {
+	testutil.SkipIfWindows(t, "convenience functions use hardcoded /bin/sh")
 	useNopPassthroughPlatform(t)
 
 	ctx := context.Background()
@@ -118,6 +121,7 @@ func TestExecConvenienceSuccess(t *testing.T) {
 }
 
 func TestExecArgsConvenienceSuccess(t *testing.T) {
+	testutil.SkipIfWindows(t, "convenience functions use hardcoded /bin/sh")
 	useNopPassthroughPlatform(t)
 
 	ctx := context.Background()
@@ -161,6 +165,7 @@ func TestCheckConvenienceManagerFails(t *testing.T) {
 
 // Test Exec convenience when NewManager fails.
 func TestExecConvenienceManagerFails(t *testing.T) {
+	testutil.SkipIfWindows(t, "convenience functions use hardcoded /bin/sh")
 	useUnavailablePlatform(t)
 
 	_, err := Exec(context.Background(), "echo hello")
@@ -171,6 +176,7 @@ func TestExecConvenienceManagerFails(t *testing.T) {
 
 // Test ExecArgs convenience when NewManager fails.
 func TestExecArgsConvenienceManagerFails(t *testing.T) {
+	testutil.SkipIfWindows(t, "convenience functions use hardcoded /bin/sh")
 	useUnavailablePlatform(t)
 
 	_, err := ExecArgs(context.Background(), "echo", []string{"hello"})
@@ -181,6 +187,7 @@ func TestExecArgsConvenienceManagerFails(t *testing.T) {
 
 // Test Wrap convenience when NewManager fails.
 func TestWrapConvenienceManagerFails(t *testing.T) {
+	testutil.SkipIfWindows(t, "convenience functions use hardcoded /bin/sh")
 	useUnavailablePlatform(t)
 
 	cmd := exec.Command("echo", "hello")
@@ -201,6 +208,7 @@ func TestNewManagerFallbackWarnWithApprovalCallback(t *testing.T) {
 	useUnavailablePlatform(t)
 
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	cfg.FallbackPolicy = FallbackWarn
 
 	called := false
@@ -255,11 +263,12 @@ func TestNewManagerWithMITMProxy(t *testing.T) {
 	useStubPlatform(t)
 
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	cfg.Network = NetworkConfig{
 		Mode:           NetworkFiltered,
 		AllowedDomains: []string{"example.com"},
 		MITMProxy: &MITMProxyConfig{
-			SocketPath: "/tmp/test-mitm.sock",
+			SocketPath: testutil.TempPath("test-mitm.sock"),
 			Domains:    []string{"example.com"},
 		},
 	}
@@ -318,6 +327,7 @@ func TestValidateFilesystemAbsErrorBrokenCwd(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("filepath.Abs does not fail on macOS when CWD is deleted")
 	}
+	testutil.SkipIfWindows(t, "filepath.Abs does not fail on Windows when CWD is deleted")
 
 	// Save and restore cwd.
 	origDir, err := os.Getwd()
@@ -491,6 +501,7 @@ func TestCurlPipeShellMatchArgsEmptyAfterPipe(t *testing.T) {
 // We test the ScanDangerousFiles error path by using a broken cwd.
 
 func TestBuildWrapConfigDangerousFileScanError(t *testing.T) {
+	testutil.SkipIfWindows(t, "filepath.Abs does not fail on Windows when CWD is deleted")
 	useStubPlatform(t)
 
 	// Save and restore cwd.
@@ -500,8 +511,9 @@ func TestBuildWrapConfigDangerousFileScanError(t *testing.T) {
 	}
 
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	cfg.Filesystem.AutoProtectDangerousFiles = true
-	cfg.Filesystem.WritableRoots = []string{"/tmp"}
+	cfg.Filesystem.WritableRoots = []string{testutil.TempDir()}
 
 	mgr, err := newManager(cfg)
 	if err != nil {
@@ -595,6 +607,7 @@ func TestUpdateConfigRelativeWritableRootAbsError(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("filepath.Abs does not fail on macOS when CWD is deleted")
 	}
+	testutil.SkipIfWindows(t, "filepath.Abs behavior differs on Windows")
 
 	cfg := newTestConfig(t)
 	mgr, err := newManager(cfg)
@@ -642,6 +655,7 @@ func TestNewManagerFallbackWarnNopManager(t *testing.T) {
 	useUnavailablePlatform(t)
 
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	cfg.FallbackPolicy = FallbackWarn
 
 	mgr, err := NewManager(cfg)
@@ -665,6 +679,7 @@ func TestNewManagerUnavailableDefaultFallback(t *testing.T) {
 	useUnavailablePlatform(t)
 
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	// FallbackStrict is the default (0 value).
 	cfg.FallbackPolicy = FallbackStrict
 
@@ -687,13 +702,14 @@ func TestBuildWrapConfigGlobExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MkdirTemp() error: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	t.Cleanup(func() { os.RemoveAll(tmpDir) })
 
 	// Create test files.
 	os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("test"), 0644)
 	os.WriteFile(filepath.Join(tmpDir, "test.log"), []byte("log"), 0644)
 
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	cfg.Filesystem.WritableRoots = []string{tmpDir}
 	cfg.Filesystem.DenyRead = []string{filepath.Join(tmpDir, "*.txt")}
 	cfg.Filesystem.DenyWrite = []string{filepath.Join(tmpDir, "*.log")}

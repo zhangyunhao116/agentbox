@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/zhangyunhao116/agentbox/platform"
+	"github.com/zhangyunhao116/agentbox/testutil"
 )
 
 // stubPlatform is a test platform that reports as available but returns
@@ -42,6 +43,7 @@ func newTestConfig(t *testing.T) *Config {
 	t.Helper()
 	useStubPlatform(t)
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	return cfg
 }
 
@@ -87,7 +89,9 @@ func TestNewManagerDefaultsFilled(t *testing.T) {
 	cfg := newTestConfig(t)
 	// Clear defaults to verify they get filled in.
 	cfg.Classifier = nil
-	cfg.Shell = ""
+	// Keep cfg.Shell from newTestConfig (testutil.Shell()) so the shell
+	// existence check passes on all platforms. We test the default-shell
+	// fill-in separately below.
 	cfg.MaxOutputBytes = 0 // 0 means no limit; should be preserved as-is.
 	cfg.ResourceLimits = nil
 
@@ -105,14 +109,35 @@ func TestNewManagerDefaultsFilled(t *testing.T) {
 	if m.cfg.Classifier == nil {
 		t.Error("Classifier should be set to default")
 	}
-	if m.cfg.Shell != defaultShell {
-		t.Errorf("Shell = %q, want %q", m.cfg.Shell, defaultShell)
+	// Shell was explicitly set; verify it was preserved.
+	if m.cfg.Shell != testutil.Shell() {
+		t.Errorf("Shell = %q, want %q", m.cfg.Shell, testutil.Shell())
 	}
 	if m.cfg.MaxOutputBytes != 0 {
 		t.Errorf("MaxOutputBytes = %d, want 0 (no limit)", m.cfg.MaxOutputBytes)
 	}
 	if m.cfg.ResourceLimits == nil {
 		t.Error("ResourceLimits should be set to default")
+	}
+}
+
+// TestNewManagerDefaultShellFill verifies that newManager fills in the
+// default shell (/bin/sh) when Shell is empty. This only works on Unix
+// where /bin/sh exists.
+func TestNewManagerDefaultShellFill(t *testing.T) {
+	testutil.SkipIfWindows(t, "defaultShell is /bin/sh which does not exist on Windows")
+	cfg := newTestConfig(t)
+	cfg.Shell = ""
+
+	mgr, err := newManager(cfg)
+	if err != nil {
+		t.Fatalf("newManager() error: %v", err)
+	}
+	defer mgr.Cleanup(context.Background())
+
+	m := mgr.(*manager)
+	if m.cfg.Shell != defaultShell {
+		t.Errorf("Shell = %q, want %q", m.cfg.Shell, defaultShell)
 	}
 }
 
@@ -265,14 +290,15 @@ func TestManagerConcurrentExecAndUpdateConfig(t *testing.T) {
 	}
 	defer mgr.Cleanup(context.Background())
 
+	shell, echoArgs := testutil.EchoCommand("race")
 	var wg sync.WaitGroup
 
-	// Concurrent Exec calls.
+	// Concurrent ExecArgs calls (platform-aware shell).
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = mgr.Exec(context.Background(), "echo race")
+			_, _ = mgr.ExecArgs(context.Background(), shell, echoArgs)
 		}()
 	}
 
@@ -282,7 +308,7 @@ func TestManagerConcurrentExecAndUpdateConfig(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			newCfg := DefaultConfig()
-			newCfg.Shell = "/bin/sh"
+			newCfg.Shell = testutil.Shell()
 			_ = mgr.UpdateConfig(newCfg)
 		}()
 	}
@@ -345,6 +371,7 @@ func TestManagerCustomLogger(t *testing.T) {
 	logger := slog.New(handler)
 
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	cfg.Logger = logger
 	mgr, err := NewManager(cfg)
 	if err != nil {
@@ -368,6 +395,7 @@ func TestManagerCustomLogger(t *testing.T) {
 func TestManagerNilLogger(t *testing.T) {
 	useStubPlatform(t)
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	// Logger is nil by default.
 	if cfg.Logger != nil {
 		t.Fatal("DefaultConfig().Logger should be nil")
@@ -433,6 +461,7 @@ func TestManagerLoggerPropagatedToProxy(t *testing.T) {
 	logger := slog.New(handler)
 
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	cfg.Logger = logger
 	cfg.Network.Mode = NetworkFiltered
 	cfg.Network.AllowedDomains = []string{"example.com"}

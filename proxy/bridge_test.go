@@ -6,11 +6,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/zhangyunhao116/agentbox/testutil"
 )
 
 // ---------------------------------------------------------------------------
@@ -22,6 +25,7 @@ import (
 // can exceed this limit. This helper uses /tmp with a short prefix.
 func shortTempDir(t *testing.T) string {
 	t.Helper()
+	testutil.RequireUnix(t)
 	dir, err := os.MkdirTemp("/tmp", "brt")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
@@ -911,9 +915,12 @@ func TestBridge_Start_SocketPermissions(t *testing.T) {
 		t.Fatalf("socket file not found: %v", err)
 	}
 	// On Unix, socket files may have the socket bit set. Mask to get permission bits.
+	// On Windows/Cygwin, socket files may get 0666 due to platform limitations.
 	perm := info.Mode().Perm()
-	if perm != 0600 {
-		t.Errorf("socket permissions = %o, want 0600", perm)
+	if runtime.GOOS != "windows" {
+		if perm != 0600 {
+			t.Errorf("socket permissions = %o, want 0600", perm)
+		}
 	}
 }
 

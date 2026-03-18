@@ -132,7 +132,7 @@ func (n *nopManager) Exec(ctx context.Context, command string, opts ...Option) (
 	if co.shell != "" {
 		shell = co.shell
 	}
-	cmd := exec.CommandContext(ctx, shell, "-c", command)
+	cmd := exec.CommandContext(ctx, shell, "-c", command) //nolint:gosec // command is user-provided and classified before execution
 
 	// Apply per-call working directory.
 	if co.workingDir != "" {
@@ -175,7 +175,7 @@ func (n *nopManager) ExecArgs(ctx context.Context, name string, args []string, o
 		return nil, err
 	}
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // args are user-provided and classified before execution
 
 	// Apply per-call working directory.
 	if co.workingDir != "" {

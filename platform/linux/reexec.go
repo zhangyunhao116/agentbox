@@ -21,13 +21,13 @@ const reExecEnvKey = "_AGENTBOX_CONFIG"
 
 // Function variables for dependency injection in tests.
 var (
-	hardenProcessFn          = hardenProcess
+	hardenProcessFn           = hardenProcess
 	applyReadOnlyBindMountsFn = applyReadOnlyBindMounts
-	applyLandlockFn          = applyLandlock
-	applyResourceLimFn       = applyResourceLimits
-	applySeccompFn           = ApplySeccomp
-	syscallExecFn            = syscall.Exec
-	osExitFn                 = os.Exit
+	applyLandlockFn           = applyLandlock
+	applyResourceLimFn        = applyResourceLimits
+	applySeccompFn            = ApplySeccomp
+	syscallExecFn             = syscall.Exec
+	osExitFn                  = os.Exit
 )
 
 // reExecConfig is the configuration passed to the re-exec child via a pipe.

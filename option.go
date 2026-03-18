@@ -164,4 +164,3 @@ func WithMaxOutputBytes(n int) Option {
 		o.maxOutputBytes = n
 	}
 }
-

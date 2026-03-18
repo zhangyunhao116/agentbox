@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/zhangyunhao116/agentbox/platform"
+	"github.com/zhangyunhao116/agentbox/testutil"
 )
 
 func TestDependencyCheckOK(t *testing.T) {
@@ -63,6 +64,7 @@ func TestNewManagerValidatesConfig(t *testing.T) {
 
 func TestNewManagerSucceeds(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	cfg.FallbackPolicy = FallbackWarn
 
 	mgr, err := NewManager(cfg)
@@ -78,6 +80,7 @@ func TestNewManagerSucceeds(t *testing.T) {
 
 func TestNewManagerWithOptions(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	cfg.FallbackPolicy = FallbackWarn
 
 	called := false
@@ -101,6 +104,10 @@ func TestNewManagerWithOptions(t *testing.T) {
 }
 
 func TestConvenienceFunctions(t *testing.T) {
+	// Convenience functions use DefaultConfig() which defaults Shell to
+	// /bin/sh — not available on Windows until defaultShell is made
+	// platform-aware.
+	testutil.SkipIfWindows(t, "convenience functions use /bin/sh as default shell")
 	ctx := context.Background()
 
 	t.Run("Exec", func(t *testing.T) {
@@ -174,6 +181,8 @@ func TestCheckConvenience(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWrapConvenienceForbiddenCommand(t *testing.T) {
+	// Wrap convenience uses DefaultConfig() which defaults Shell to /bin/sh.
+	testutil.SkipIfWindows(t, "convenience functions use /bin/sh as default shell")
 	// Pass a forbidden command (rm -rf /) to the Wrap convenience function.
 	// NewManager succeeds, but mgr.Wrap returns ErrForbiddenCommand,
 	// which triggers the cleanup-and-return-error path on L55-57.
@@ -196,6 +205,7 @@ func TestWrapConvenienceForbiddenCommand(t *testing.T) {
 
 func TestCheckManagerMethod(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
 	cfg.FallbackPolicy = FallbackWarn
 	mgr, err := NewManager(cfg)
 	if err != nil {

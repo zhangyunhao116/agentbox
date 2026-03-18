@@ -490,7 +490,7 @@ func (m *manager) Exec(ctx context.Context, command string, opts ...Option) (*Ex
 		shell = co.shell
 	}
 
-	cmd := exec.CommandContext(ctx, shell, "-c", command)
+	cmd := exec.CommandContext(ctx, shell, "-c", command) //nolint:gosec // command is user-provided and classified before execution
 	if co.workingDir != "" {
 		cmd.Dir = co.workingDir
 	}
@@ -518,7 +518,7 @@ func (m *manager) ExecArgs(ctx context.Context, name string, args []string, opts
 		return nil, err
 	}
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // args are user-provided and classified before execution
 	if co.workingDir != "" {
 		cmd.Dir = co.workingDir
 	}

@@ -1,6 +1,6 @@
 # agentbox
 
-Process-level sandbox isolation library for AI agents and CI/CD systems. Zero external runtime dependencies, no CGo, cross-platform (macOS + Linux).
+Process-level sandbox isolation library for AI agents and CI/CD systems. Zero external runtime dependencies, no CGo, cross-platform (macOS, Linux, Windows via WSL2).
 
 > **⚠️ Beta Notice**
 >
@@ -10,10 +10,10 @@ Process-level sandbox isolation library for AI agents and CI/CD systems. Zero ex
 > |-----------|--------|
 > | **macOS (Seatbelt)** | ✅ Tested and stable |
 > | **Linux (Namespace + Landlock)** | ✅ Tested (beta) |
-> | **Windows (WSL2)** | 📋 Designed — see [design/06-windows-wsl-sandbox.md](./design/06-windows-wsl-sandbox.md) |
+> | **Windows (WSL2)** | ✅ Tested (beta) — see [design/06-windows-wsl-sandbox.md](./design/06-windows-wsl-sandbox.md) |
 > | **Go API** | ⚠️ Beta — expect breaking changes before v1.0 |
 >
-> **Windows Support:** Windows support is planned via WSL2 (Windows Subsystem for Linux 2), following the industry-standard approach used by Claude Code and OpenAI Codex. See the [design document](./design/06-windows-wsl-sandbox.md) for implementation details.
+> **Windows Support:** Windows support uses WSL2 (Windows Subsystem for Linux 2), providing two isolation tiers: Simple Mode (Hyper-V VM boundary) and Full Mode (Linux namespace sandbox inside WSL2). Requires Windows 10 Build 19041+ with WSL2 ≥ v2.5.10. See the [design document](./design/06-windows-wsl-sandbox.md) for details.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/zhangyunhao116/agentbox.svg)](https://pkg.go.dev/github.com/zhangyunhao116/agentbox)
 
@@ -404,10 +404,30 @@ agentbox/
 ├── reexec.go           # Linux re-exec sandbox helper (namespace setup)
 ├── platform/           # Platform-specific sandbox backends
 │   ├── darwin/         # macOS: Seatbelt/SBPL profile generation + enforcement
-│   └── linux/          # Linux: Namespaces + Landlock + Seccomp BPF
+│   ├── linux/          # Linux: Namespaces + Landlock + Seccomp BPF
+│   └── windows/        # Windows: WSL2 VM isolation + optional Linux sandbox
 ├── proxy/              # HTTP/SOCKS5 proxy with domain-level filtering
 └── internal/           # Internal utilities
 ```
+
+### Windows WSL2 Sandbox
+
+On Windows, agentbox isolates commands inside a WSL2 virtual machine running a minimal Alpine Linux distribution.
+
+**Simple Mode (Tier 1):** Commands run inside the WSL2 VM with security hardening via `wsl.conf`:
+- `interop.enabled=false` — prevents WSL→Windows escape
+- `automount.options="metadata,ro"` — Windows drives mounted read-only
+- Non-root `sandbox` user
+- `appendWindowsPath=false` — Windows PATH not inherited
+
+**Full Mode (Tier 2):** Adds Linux namespace sandbox inside WSL2 using the same mechanisms as the native Linux platform (namespaces, Landlock, seccomp). Requires a pre-built helper binary set via `SetHelperBinary()`.
+
+**Prerequisites:**
+- Windows 10 Build 19041+ or Windows 11
+- WSL2 ≥ v2.5.10 (enforced for CVE-2025-53788 mitigation)
+- `wsl.exe` available in PATH
+
+The sandbox distro (`agentbox-sb`) is automatically provisioned on first use by downloading the Alpine Linux minirootfs (~3.5 MB).
 
 ## Linux Re-exec Helper
 
@@ -423,6 +443,8 @@ func main() {
 ```
 
 On macOS and other platforms, `MaybeSandboxInit()` is a no-op that returns `false`.
+
+On Windows, the sandbox helper is a separate Linux binary that runs inside the WSL2 distro. Set it via `SetHelperBinary()` to enable Full Mode.
 
 ## Dependencies
 
@@ -451,6 +473,18 @@ go tool cover -html=cover.out
 ```bash
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 golangci-lint run ./...
+```
+
+### Windows Testing
+
+Windows tests require WSL2 to be installed and enabled. Tests that depend on `/bin/sh` or Unix-specific features are automatically skipped on Windows.
+
+```bash
+# On a Windows machine with Go and WSL2:
+go test ./...
+
+# Cross-compile the sandbox helper for WSL2 Full Mode:
+GOOS=linux GOARCH=amd64 go build -o sandbox-helper ./cmd/sandbox-helper
 ```
 
 ## License

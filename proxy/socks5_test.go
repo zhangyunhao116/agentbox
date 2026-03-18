@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/zhangyunhao116/agentbox/proxy/internal/socks5"
+	"github.com/zhangyunhao116/agentbox/testutil"
 	"golang.org/x/net/proxy"
 )
 
@@ -1526,6 +1527,7 @@ func TestDialWithIPCheck_AllPublicIPsAllowed(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSOCKS5MITMFallbackReturnsError(t *testing.T) {
+	testutil.RequireUnix(t)
 	// Configure MITM with a non-existent socket path.
 	router := NewMITMRouter(&MITMConfig{
 		SocketPath: "/tmp/nonexistent-mitm-socks5-" + t.Name() + ".sock",
@@ -1595,6 +1597,7 @@ func TestSOCKS5MITMFallbackReturnsError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSOCKS5MITMConnectHandshake(t *testing.T) {
+	testutil.RequireUnix(t)
 	// Create a Unix socket listener that expects a CONNECT request
 	// and verifies the target host is the original FQDN (not placeholder IP).
 	socketPath := fmt.Sprintf("/tmp/socks5-mitm-handshake-%d.sock", time.Now().UnixNano())

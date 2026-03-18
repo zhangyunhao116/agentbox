@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/zhangyunhao116/agentbox/testutil"
 )
 
 func TestNopManagerWrap(t *testing.T) {
@@ -21,12 +24,13 @@ func TestNopManagerWrap(t *testing.T) {
 
 func TestNopManagerExec(t *testing.T) {
 	mgr := NewNopManager()
-	result, err := mgr.Exec(context.Background(), "echo hello")
+	shell, args := testutil.EchoCommand("hello")
+	result, err := mgr.ExecArgs(context.Background(), shell, args)
 	if err != nil {
-		t.Fatalf("Exec() error: %v", err)
+		t.Fatalf("ExecArgs() error: %v", err)
 	}
 	if result == nil {
-		t.Fatal("Exec() returned nil result")
+		t.Fatal("ExecArgs() returned nil result")
 	}
 	if got := strings.TrimSpace(result.Stdout); got != "hello" {
 		t.Errorf("Stdout = %q, want %q", got, "hello")
@@ -44,9 +48,10 @@ func TestNopManagerExec(t *testing.T) {
 
 func TestNopManagerExecNonZeroExit(t *testing.T) {
 	mgr := NewNopManager()
-	result, err := mgr.Exec(context.Background(), "exit 42")
+	shell, args := testutil.ExitCommand(42)
+	result, err := mgr.ExecArgs(context.Background(), shell, args)
 	if err != nil {
-		t.Fatalf("Exec() error: %v", err)
+		t.Fatalf("ExecArgs() error: %v", err)
 	}
 	if result.ExitCode != 42 {
 		t.Errorf("ExitCode = %d, want 42", result.ExitCode)
@@ -55,9 +60,10 @@ func TestNopManagerExecNonZeroExit(t *testing.T) {
 
 func TestNopManagerExecStderr(t *testing.T) {
 	mgr := NewNopManager()
-	result, err := mgr.Exec(context.Background(), "echo error >&2")
+	shell, args := testutil.StderrCommand("error")
+	result, err := mgr.ExecArgs(context.Background(), shell, args)
 	if err != nil {
-		t.Fatalf("Exec() error: %v", err)
+		t.Fatalf("ExecArgs() error: %v", err)
 	}
 	if got := strings.TrimSpace(result.Stderr); got != "error" {
 		t.Errorf("Stderr = %q, want %q", got, "error")
@@ -83,7 +89,8 @@ func TestNopManagerExecArgs(t *testing.T) {
 
 func TestNopManagerExecArgsNonZeroExit(t *testing.T) {
 	mgr := NewNopManager()
-	result, err := mgr.ExecArgs(context.Background(), "/bin/sh", []string{"-c", "exit 7"})
+	shell, args := testutil.ExitCommand(7)
+	result, err := mgr.ExecArgs(context.Background(), shell, args)
 	if err != nil {
 		t.Fatalf("ExecArgs() error: %v", err)
 	}
@@ -151,11 +158,13 @@ func TestNopManagerImplementsInterface(t *testing.T) {
 
 func TestNopManagerExecInvalidCommand(t *testing.T) {
 	mgr := NewNopManager()
-	_, err := mgr.Exec(context.Background(), "nonexistent_command_xyz_12345")
+	// Use ExecArgs with the platform shell so this works on Windows too.
+	shell, args := testutil.Shell(), testutil.ShellArgs("nonexistent_command_xyz_12345")
+	_, err := mgr.ExecArgs(context.Background(), shell, args)
 	// The command should fail but not return a Go error for exit code issues.
 	// However, for a truly nonexistent command, the shell returns exit code 127.
 	if err != nil {
-		t.Fatalf("Exec() error: %v", err)
+		t.Fatalf("ExecArgs() error: %v", err)
 	}
 }
 
@@ -174,12 +183,13 @@ func TestNopManagerConcurrentAccess(t *testing.T) {
 	mgr := NewNopManager()
 	var wg sync.WaitGroup
 
-	// Concurrent Exec calls.
+	// Concurrent ExecArgs calls using cross-platform echo.
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = mgr.Exec(context.Background(), "echo concurrent")
+			shell, args := testutil.EchoCommand("concurrent")
+			_, _ = mgr.ExecArgs(context.Background(), shell, args)
 		}()
 	}
 
@@ -229,11 +239,13 @@ func TestNopManagerConcurrentCleanup(t *testing.T) {
 }
 
 // TestNopManagerExecWithShell verifies that WithShell option is applied
-// in nopManager.Exec.
+// in nopManager.Exec.  The Exec method hardcodes the "-c" shell flag so
+// this test is inherently Unix-specific.
 func TestNopManagerExecWithShell(t *testing.T) {
+	testutil.RequireUnix(t)
 	mgr := NewNopManager()
-	// Use /bin/sh explicitly via WithShell (should work the same as default).
-	result, err := mgr.Exec(context.Background(), "echo shell_test", WithShell("/bin/sh"))
+	// Use the platform shell explicitly via WithShell (should work the same as default).
+	result, err := mgr.Exec(context.Background(), "echo shell_test", WithShell(testutil.Shell()))
 	if err != nil {
 		t.Fatalf("Exec() with WithShell error: %v", err)
 	}
@@ -246,11 +258,12 @@ func TestNopManagerExecWithShell(t *testing.T) {
 // in nopManager.Exec.
 func TestNopManagerExecWithEnv(t *testing.T) {
 	mgr := NewNopManager()
-	result, err := mgr.Exec(context.Background(), "echo $NOP_TEST_VAR",
+	shell, args := testutil.PrintEnvCommand("NOP_TEST_VAR")
+	result, err := mgr.ExecArgs(context.Background(), shell, args,
 		WithEnv("NOP_TEST_VAR=nop_value"),
 	)
 	if err != nil {
-		t.Fatalf("Exec() with WithEnv error: %v", err)
+		t.Fatalf("ExecArgs() with WithEnv error: %v", err)
 	}
 	if got := strings.TrimSpace(result.Stdout); got != "nop_value" {
 		t.Errorf("Stdout = %q, want %q", got, "nop_value")
@@ -261,7 +274,8 @@ func TestNopManagerExecWithEnv(t *testing.T) {
 // in nopManager.ExecArgs.
 func TestNopManagerExecArgsWithEnv(t *testing.T) {
 	mgr := NewNopManager()
-	result, err := mgr.ExecArgs(context.Background(), "/bin/sh", []string{"-c", "echo $NOP_ARGS_VAR"},
+	shell, args := testutil.PrintEnvCommand("NOP_ARGS_VAR")
+	result, err := mgr.ExecArgs(context.Background(), shell, args,
 		WithEnv("NOP_ARGS_VAR=args_value"),
 	)
 	if err != nil {
@@ -364,14 +378,25 @@ func TestNopManagerCheckForbiddenCommand(t *testing.T) {
 // in nopManager.Exec.
 func TestNopManagerExecWithWorkingDir(t *testing.T) {
 	mgr := NewNopManager()
-	result, err := mgr.Exec(context.Background(), "pwd", WithWorkingDir("/tmp"))
+	tmpDir := testutil.TempDir()
+	shell, args := testutil.PwdCommand()
+	result, err := mgr.ExecArgs(context.Background(), shell, args, WithWorkingDir(tmpDir))
 	if err != nil {
-		t.Fatalf("Exec() with WithWorkingDir error: %v", err)
+		t.Fatalf("ExecArgs() with WithWorkingDir error: %v", err)
 	}
-	// On macOS, /tmp is a symlink to /private/tmp.
 	got := strings.TrimSpace(result.Stdout)
-	if got != "/tmp" && got != "/private/tmp" {
-		t.Errorf("Stdout = %q, want /tmp or /private/tmp", got)
+	// On macOS, /tmp is a symlink to /private/tmp, so resolve both for
+	// comparison.
+	wantResolved, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		wantResolved = tmpDir
+	}
+	gotResolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		gotResolved = got
+	}
+	if gotResolved != wantResolved {
+		t.Errorf("Stdout = %q (resolved %q), want %q (resolved %q)", got, gotResolved, tmpDir, wantResolved)
 	}
 }
 
@@ -379,15 +404,25 @@ func TestNopManagerExecWithWorkingDir(t *testing.T) {
 // in nopManager.ExecArgs.
 func TestNopManagerExecArgsWithWorkingDir(t *testing.T) {
 	mgr := NewNopManager()
-	result, err := mgr.ExecArgs(context.Background(), "/bin/sh", []string{"-c", "pwd"},
-		WithWorkingDir("/tmp"),
+	tmpDir := testutil.TempDir()
+	shell, args := testutil.PwdCommand()
+	result, err := mgr.ExecArgs(context.Background(), shell, args,
+		WithWorkingDir(tmpDir),
 	)
 	if err != nil {
 		t.Fatalf("ExecArgs() with WithWorkingDir error: %v", err)
 	}
 	got := strings.TrimSpace(result.Stdout)
-	if got != "/tmp" && got != "/private/tmp" {
-		t.Errorf("Stdout = %q, want /tmp or /private/tmp", got)
+	wantResolved, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		wantResolved = tmpDir
+	}
+	gotResolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		gotResolved = got
+	}
+	if gotResolved != wantResolved {
+		t.Errorf("Stdout = %q (resolved %q), want %q (resolved %q)", got, gotResolved, tmpDir, wantResolved)
 	}
 }
 
@@ -396,7 +431,10 @@ func TestNopManagerExecArgsWithWorkingDir(t *testing.T) {
 func TestNopManagerExecWithTimeout(t *testing.T) {
 	mgr := NewNopManager()
 	start := time.Now()
-	result, err := mgr.Exec(context.Background(), "sleep 30", WithTimeout(100*time.Millisecond))
+	shell, args := testutil.SleepCommand(30)
+	result, err := mgr.ExecArgs(context.Background(), shell, args,
+		WithTimeout(100*time.Millisecond),
+	)
 	elapsed := time.Since(start)
 
 	// The command should have been killed by the timeout.
@@ -418,7 +456,8 @@ func TestNopManagerExecWithTimeout(t *testing.T) {
 func TestNopManagerExecArgsWithTimeout(t *testing.T) {
 	mgr := NewNopManager()
 	start := time.Now()
-	result, err := mgr.ExecArgs(context.Background(), "sleep", []string{"30"},
+	shell, args := testutil.SleepCommand(30)
+	result, err := mgr.ExecArgs(context.Background(), shell, args,
 		WithTimeout(100*time.Millisecond),
 	)
 	elapsed := time.Since(start)
@@ -517,11 +556,12 @@ func TestNopManagerExecWithCustomClassifier(t *testing.T) {
 func TestNopManagerExecMaxOutputBytes(t *testing.T) {
 	mgr := NewNopManager()
 	// Generate output larger than 10 bytes.
-	result, err := mgr.Exec(context.Background(), "echo 'this is a long output string that exceeds the limit'",
+	shell, args := testutil.EchoCommand("this is a long output string that exceeds the limit")
+	result, err := mgr.ExecArgs(context.Background(), shell, args,
 		WithMaxOutputBytes(10),
 	)
 	if err != nil {
-		t.Fatalf("Exec() error: %v", err)
+		t.Fatalf("ExecArgs() error: %v", err)
 	}
 	if len(result.Stdout) > 10 {
 		t.Errorf("Stdout length = %d, want <= 10 (MaxOutputBytes)", len(result.Stdout))
@@ -569,12 +609,13 @@ func TestNopManagerExecEscalatedApproved(t *testing.T) {
 		return Approve, nil
 	})
 	escalateAll := &mockClassifier{result: ClassifyResult{Decision: Escalated, Reason: "needs approval"}}
-	result, err := mgr.Exec(context.Background(), "echo approved", WithClassifier(escalateAll))
+	shell, args := testutil.EchoCommand("approved")
+	result, err := mgr.ExecArgs(context.Background(), shell, args, WithClassifier(escalateAll))
 	if err != nil {
-		t.Fatalf("Exec() error: %v", err)
+		t.Fatalf("ExecArgs() error: %v", err)
 	}
 	if result == nil {
-		t.Fatal("Exec() returned nil result")
+		t.Fatal("ExecArgs() returned nil result")
 	}
 	if got := strings.TrimSpace(result.Stdout); got != "approved" {
 		t.Errorf("Stdout = %q, want %q", got, "approved")
@@ -648,30 +689,33 @@ func TestNopManagerExecEscalatedSessionCache(t *testing.T) {
 		return ApproveSession, nil
 	})
 	escalateAll := &mockClassifier{result: ClassifyResult{Decision: Escalated, Reason: "needs approval"}}
+	shell, args := testutil.EchoCommand("cached")
 
 	// First call: callback should be invoked.
-	_, err := mgr.Exec(context.Background(), "echo cached", WithClassifier(escalateAll))
+	_, err := mgr.ExecArgs(context.Background(), shell, args, WithClassifier(escalateAll))
 	if err != nil {
-		t.Fatalf("first Exec() error: %v", err)
+		t.Fatalf("first ExecArgs() error: %v", err)
 	}
 	if callCount != 1 {
-		t.Fatalf("callback count after first Exec = %d, want 1", callCount)
+		t.Fatalf("callback count after first ExecArgs = %d, want 1", callCount)
 	}
 
 	// Second call with same command: callback should be skipped (cached).
-	_, err = mgr.Exec(context.Background(), "echo cached", WithClassifier(escalateAll))
+	_, err = mgr.ExecArgs(context.Background(), shell, args, WithClassifier(escalateAll))
 	if err != nil {
-		t.Fatalf("second Exec() error: %v", err)
+		t.Fatalf("second ExecArgs() error: %v", err)
 	}
 	if callCount != 1 {
-		t.Errorf("callback count after second Exec = %d, want 1 (cached)", callCount)
+		t.Errorf("callback count after second ExecArgs = %d, want 1 (cached)", callCount)
 	}
 }
 
 // TestNopManagerExecEscalatedSessionCacheNormalized verifies that session
 // approval cache normalizes whitespace so "echo  hello" and "echo hello"
-// share the same cache entry.
+// share the same cache entry.  This test uses Exec (which hardcodes "-c")
+// and is therefore Unix-specific.
 func TestNopManagerExecEscalatedSessionCacheNormalized(t *testing.T) {
+	testutil.RequireUnix(t)
 	callCount := 0
 	mgr := newNopManagerWithApproval(func(ctx context.Context, req ApprovalRequest) (ApprovalDecision, error) {
 		callCount++
@@ -929,6 +973,7 @@ func TestNopManagerConcurrentUpdateConfigAndOps(t *testing.T) {
 	var wg sync.WaitGroup
 
 	ctx := context.Background()
+	shell, args := testutil.EchoCommand("race-test")
 
 	// Concurrent UpdateConfig calls that swap the classifier.
 	for i := 0; i < 10; i++ {
@@ -941,12 +986,12 @@ func TestNopManagerConcurrentUpdateConfigAndOps(t *testing.T) {
 		}()
 	}
 
-	// Concurrent Exec calls.
+	// Concurrent ExecArgs calls (replaces Exec to avoid hardcoded /bin/sh).
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = mgr.Exec(ctx, "echo race-test")
+			_, _ = mgr.ExecArgs(ctx, shell, args)
 		}()
 	}
 

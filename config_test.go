@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zhangyunhao116/agentbox/testutil"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -172,8 +175,8 @@ func TestValidateValidConfig(t *testing.T) {
 	cfg := &Config{
 		Filesystem: FilesystemConfig{
 			WritableRoots: []string{os.TempDir()},
-			DenyWrite:     []string{"/etc"},
-			DenyRead:      []string{"/secret"},
+			DenyWrite:     []string{testutil.TempPath("etc-deny")},
+			DenyRead:      []string{testutil.TempPath("secret")},
 		},
 		Network: NetworkConfig{
 			Mode:           NetworkFiltered,
@@ -207,11 +210,13 @@ func TestValidateEmptyWritableRoot(t *testing.T) {
 }
 
 func TestValidateNonMutating(t *testing.T) {
+	denyWritePath := testutil.TempPath("etc-deny")
+	denyReadPath := testutil.TempPath("secret")
 	cfg := &Config{
 		Filesystem: FilesystemConfig{
 			WritableRoots: []string{os.TempDir(), "relative/path"},
-			DenyWrite:     []string{"/etc"},
-			DenyRead:      []string{"/secret"},
+			DenyWrite:     []string{denyWritePath},
+			DenyRead:      []string{denyReadPath},
 		},
 	}
 
@@ -236,6 +241,7 @@ func TestValidateNonMutating(t *testing.T) {
 // TestNewManagerNormalizesRelativePaths verifies that newManager resolves
 // relative writable roots to absolute paths on its internal copy.
 func TestNewManagerNormalizesRelativePaths(t *testing.T) {
+	testutil.SkipIfWindows(t, "requires Unix shell")
 	cfg := &Config{
 		FallbackPolicy: FallbackWarn,
 		Filesystem: FilesystemConfig{
@@ -258,6 +264,7 @@ func TestNewManagerNormalizesRelativePaths(t *testing.T) {
 // TestDefaultConfigDenyReadExpanded verifies that DefaultConfig includes
 // expanded DenyRead entries for sensitive credential files.
 func TestDefaultConfigDenyReadExpanded(t *testing.T) {
+	testutil.SkipIfWindows(t, "Unix-specific paths in DenyRead")
 	cfg := DefaultConfig()
 
 	// Check that DenyRead includes the new entries.
@@ -268,12 +275,12 @@ func TestDefaultConfigDenyReadExpanded(t *testing.T) {
 
 	home, _ := os.UserHomeDir()
 	expected := []string{
-		home + "/.git-credentials",
-		home + "/.npmrc",
-		home + "/.netrc",
-		home + "/.docker",
-		home + "/.pypirc",
-		home + "/.kube",
+		filepath.Join(home, ".git-credentials"),
+		filepath.Join(home, ".npmrc"),
+		filepath.Join(home, ".netrc"),
+		filepath.Join(home, ".docker"),
+		filepath.Join(home, ".pypirc"),
+		filepath.Join(home, ".kube"),
 		"/proc/*/mem",
 		"/sys",
 	}
@@ -349,13 +356,15 @@ func TestValidateInvalidShell(t *testing.T) {
 }
 
 func TestValidateValidShell(t *testing.T) {
-	// /bin/sh is an absolute path and should pass Validate (no filesystem check).
+	testutil.SkipIfWindows(t, "Unix shell path validation")
+	// testutil.Shell() returns an absolute path and should pass Validate
+	// (no filesystem check).
 	cfg := &Config{
-		Shell: "/bin/sh",
+		Shell: testutil.Shell(),
 	}
 
 	if err := cfg.Validate(); err != nil {
-		t.Errorf("Validate() error for /bin/sh: %v", err)
+		t.Errorf("Validate() error for %s: %v", testutil.Shell(), err)
 	}
 }
 
@@ -740,29 +749,33 @@ func TestValidateFilesystemAbsError(t *testing.T) {
 }
 
 func TestDeepCopyConfig(t *testing.T) {
+	origWritable := testutil.TempPath("a")
+	origDenyWrite := testutil.TempPath("etc-deny")
+	origDenyRead := testutil.TempPath("secret")
+
 	orig := DefaultConfig()
-	orig.Filesystem.WritableRoots = []string{"/tmp/a"}
-	orig.Filesystem.DenyWrite = []string{"/etc"}
-	orig.Filesystem.DenyRead = []string{"/secret"}
+	orig.Filesystem.WritableRoots = []string{origWritable}
+	orig.Filesystem.DenyWrite = []string{origDenyWrite}
+	orig.Filesystem.DenyRead = []string{origDenyRead}
 	orig.Network.AllowedDomains = []string{"example.com"}
 	orig.Network.DeniedDomains = []string{"evil.com"}
 
 	cp := deepCopyConfig(orig)
 
 	// Mutate the copy and verify the original is unchanged.
-	cp.Filesystem.WritableRoots[0] = "/tmp/b"
-	cp.Filesystem.DenyWrite[0] = "/usr"
-	cp.Filesystem.DenyRead[0] = "/other"
+	cp.Filesystem.WritableRoots[0] = testutil.TempPath("b")
+	cp.Filesystem.DenyWrite[0] = testutil.TempPath("usr")
+	cp.Filesystem.DenyRead[0] = testutil.TempPath("other")
 	cp.Network.AllowedDomains[0] = "changed.com"
 	cp.Network.DeniedDomains[0] = "changed.com"
 
-	if orig.Filesystem.WritableRoots[0] != "/tmp/a" {
+	if orig.Filesystem.WritableRoots[0] != origWritable {
 		t.Error("deepCopyConfig aliased WritableRoots")
 	}
-	if orig.Filesystem.DenyWrite[0] != "/etc" {
+	if orig.Filesystem.DenyWrite[0] != origDenyWrite {
 		t.Error("deepCopyConfig aliased DenyWrite")
 	}
-	if orig.Filesystem.DenyRead[0] != "/secret" {
+	if orig.Filesystem.DenyRead[0] != origDenyRead {
 		t.Error("deepCopyConfig aliased DenyRead")
 	}
 	if orig.Network.AllowedDomains[0] != "example.com" {
@@ -785,6 +798,11 @@ func TestDeepCopyConfig(t *testing.T) {
 // TestValidateWritableRootsDenyWriteConflict verifies that Validate detects
 // conflicts between WritableRoots and DenyWrite paths.
 func TestValidateWritableRootsDenyWriteConflict(t *testing.T) {
+	tmpDir := testutil.TempDir()
+	etcDir := testutil.TempPath("etc-deny")
+	etcApp := filepath.Join(etcDir, "app")
+	etcSecret := filepath.Join(etcDir, "secret")
+
 	tests := []struct {
 		name          string
 		writableRoots []string
@@ -793,26 +811,26 @@ func TestValidateWritableRootsDenyWriteConflict(t *testing.T) {
 	}{
 		{
 			name:          "exact match",
-			writableRoots: []string{"/tmp"},
-			denyWrite:     []string{"/tmp"},
+			writableRoots: []string{tmpDir},
+			denyWrite:     []string{tmpDir},
 			wantErr:       true,
 		},
 		{
 			name:          "writable root under deny write",
-			writableRoots: []string{"/etc/app"},
-			denyWrite:     []string{"/etc"},
+			writableRoots: []string{etcApp},
+			denyWrite:     []string{etcDir},
 			wantErr:       true,
 		},
 		{
 			name:          "no conflict",
-			writableRoots: []string{"/tmp"},
-			denyWrite:     []string{"/etc"},
+			writableRoots: []string{tmpDir},
+			denyWrite:     []string{etcDir},
 			wantErr:       false,
 		},
 		{
 			name:          "deny write under writable root is not a conflict",
-			writableRoots: []string{"/etc"},
-			denyWrite:     []string{"/etc/secret"},
+			writableRoots: []string{etcDir},
+			denyWrite:     []string{etcSecret},
 			wantErr:       false,
 		},
 	}
@@ -847,7 +865,7 @@ func TestValidateWritableRootsDenyWriteConflict(t *testing.T) {
 func TestValidateNullByteInDenyRead(t *testing.T) {
 	cfg := &Config{
 		Filesystem: FilesystemConfig{
-			DenyRead: []string{"/etc/\x00secret"},
+			DenyRead: []string{testutil.TempPath("\x00secret")},
 		},
 	}
 	err := cfg.Validate()
@@ -865,7 +883,7 @@ func TestValidateNullByteInDenyRead(t *testing.T) {
 func TestValidateNullByteInDenyWrite(t *testing.T) {
 	cfg := &Config{
 		Filesystem: FilesystemConfig{
-			DenyWrite: []string{"/etc/\x00secret"},
+			DenyWrite: []string{testutil.TempPath("\x00secret")},
 		},
 	}
 	err := cfg.Validate()
@@ -883,7 +901,7 @@ func TestValidateNullByteInDenyWrite(t *testing.T) {
 func TestValidateNullByteInWritableRoots(t *testing.T) {
 	cfg := &Config{
 		Filesystem: FilesystemConfig{
-			WritableRoots: []string{"/tmp/\x00bad"},
+			WritableRoots: []string{testutil.TempPath("\x00bad")},
 		},
 	}
 	err := cfg.Validate()
@@ -945,7 +963,10 @@ func TestAutoProtectDangerousFilesField(t *testing.T) {
 func TestValidateGlobPatternsInDenyRead(t *testing.T) {
 	cfg := &Config{
 		Filesystem: FilesystemConfig{
-			DenyRead: []string{"/proc/*/mem", "/tmp/**/*.key"},
+			DenyRead: []string{
+				filepath.Join(testutil.TempDir(), "proc", "*", "mem"),
+				filepath.Join(testutil.TempDir(), "**", "*.key"),
+			},
 		},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -958,7 +979,7 @@ func TestValidateGlobPatternsInDenyRead(t *testing.T) {
 func TestValidateGlobPatternsInDenyWrite(t *testing.T) {
 	cfg := &Config{
 		Filesystem: FilesystemConfig{
-			DenyWrite: []string{"/tmp/**/.git*"},
+			DenyWrite: []string{filepath.Join(testutil.TempDir(), "**", ".git*")},
 		},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -994,6 +1015,7 @@ func TestNetworkConfigAllowLocalBinding(t *testing.T) {
 }
 
 func TestNetworkConfigAllowUnixSockets(t *testing.T) {
+	testutil.SkipIfWindows(t, "Unix socket paths")
 	cfg := &Config{
 		Network: NetworkConfig{
 			Mode:                NetworkFiltered,
@@ -1027,27 +1049,29 @@ func TestNetworkConfigAllowUnixSockets(t *testing.T) {
 }
 
 func TestDeepCopyConfigAllowUnixSockets(t *testing.T) {
+	sockPath := testutil.TempPath("docker.sock")
 	original := &Config{
 		Network: NetworkConfig{
-			AllowUnixSockets: []string{"/var/run/docker.sock"},
+			AllowUnixSockets: []string{sockPath},
 		},
 	}
 	copied := deepCopyConfig(original)
 
 	// Mutate the copy.
-	copied.Network.AllowUnixSockets[0] = "/tmp/other.sock"
+	copied.Network.AllowUnixSockets[0] = testutil.TempPath("other.sock")
 
 	// Original should be unaffected.
-	if original.Network.AllowUnixSockets[0] != "/var/run/docker.sock" {
+	if original.Network.AllowUnixSockets[0] != sockPath {
 		t.Error("deepCopyConfig should deep-copy AllowUnixSockets slice")
 	}
 }
 
 func TestDeepCopyConfigMITMProxy(t *testing.T) {
+	sockPath := testutil.TempPath("mitm.sock")
 	original := &Config{
 		Network: NetworkConfig{
 			MITMProxy: &MITMProxyConfig{
-				SocketPath: "/var/run/mitm.sock",
+				SocketPath: sockPath,
 				Domains:    []string{"*.example.com", "api.corp.io"},
 			},
 		},
@@ -1055,11 +1079,11 @@ func TestDeepCopyConfigMITMProxy(t *testing.T) {
 	copied := deepCopyConfig(original)
 
 	// Mutate the copy.
-	copied.Network.MITMProxy.SocketPath = "/tmp/other.sock"
+	copied.Network.MITMProxy.SocketPath = testutil.TempPath("other.sock")
 	copied.Network.MITMProxy.Domains[0] = "*.changed.com"
 
 	// Original should be unaffected.
-	if original.Network.MITMProxy.SocketPath != "/var/run/mitm.sock" {
+	if original.Network.MITMProxy.SocketPath != sockPath {
 		t.Error("deepCopyConfig should deep-copy MITMProxy.SocketPath")
 	}
 	if original.Network.MITMProxy.Domains[0] != "*.example.com" {
@@ -1124,7 +1148,7 @@ func TestValidateMITMProxyInvalidDomain(t *testing.T) {
 	cfg := &Config{
 		Network: NetworkConfig{
 			MITMProxy: &MITMProxyConfig{
-				SocketPath: "/var/run/mitm.sock",
+				SocketPath: testutil.TempPath("mitm.sock"),
 				Domains:    []string{""},
 			},
 		},
@@ -1139,10 +1163,11 @@ func TestValidateMITMProxyInvalidDomain(t *testing.T) {
 }
 
 func TestValidateMITMProxyValid(t *testing.T) {
+	testutil.SkipIfWindows(t, "Unix socket paths")
 	cfg := &Config{
 		Network: NetworkConfig{
 			MITMProxy: &MITMProxyConfig{
-				SocketPath: "/var/run/mitm.sock",
+				SocketPath: testutil.TempPath("mitm.sock"),
 				Domains:    []string{"*.example.com"},
 			},
 		},
@@ -1183,9 +1208,10 @@ func TestValidateAllowUnixSocketsRelative(t *testing.T) {
 }
 
 func TestValidateAllowUnixSocketsValid(t *testing.T) {
+	testutil.SkipIfWindows(t, "Unix socket paths")
 	cfg := &Config{
 		Network: NetworkConfig{
-			AllowUnixSockets: []string{"/var/run/docker.sock"},
+			AllowUnixSockets: []string{testutil.TempPath("docker.sock")},
 		},
 	}
 	if err := cfg.Validate(); err != nil {
