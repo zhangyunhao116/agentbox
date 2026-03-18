@@ -357,7 +357,7 @@ func (b *profileBuilder) line(s string) {
 
 // linef writes a formatted SBPL line.
 func (b *profileBuilder) linef(format string, args ...any) {
-	b.buf.WriteString(fmt.Sprintf(format, args...))
+	fmt.Fprintf(&b.buf, format, args...)
 	b.buf.WriteByte('\n')
 }
 

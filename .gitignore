@@ -4,6 +4,32 @@
 # Test binary
 *.test
 
+# Example binaries
+/agentsim
+/approval
+/benchmark
+/classifier
+/codemod
+/codereview
+/darwin
+/devworkflow
+/envutil
+/filesystem
+/gitops
+/healthcheck
+/manager
+/minimal
+/multicommand
+/network
+/networkaccess
+/pathutil
+/projectinit
+/researchflow
+/sandbox-helper
+
+# Windows executables
+*.exe
+
 # Coverage output
 *.out
 coverage.html
@@ -21,3 +47,6 @@ Thumbs.db
 # Build artifacts
 /bin/
 /dist/
+
+# Misc
+/EOF

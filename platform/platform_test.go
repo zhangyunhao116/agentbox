@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"runtime"
 	"testing"
+
+	"github.com/zhangyunhao116/agentbox/testutil"
 )
 
 // ---------------------------------------------------------------------------
@@ -168,7 +170,7 @@ func TestWrapConfigZeroValue(t *testing.T) {
 
 func TestWrapConfigNilResourceLimits(t *testing.T) {
 	cfg := &WrapConfig{
-		Shell:          "/bin/sh",
+		Shell:          testutil.Shell(),
 		ResourceLimits: nil,
 	}
 	if cfg.ResourceLimits != nil {
@@ -249,6 +251,13 @@ func TestDetectPlatformMatchesOS(t *testing.T) {
 		}
 		if p.Available() {
 			t.Fatal("on linux: builtin stub Available() should return false")
+		}
+	case "windows":
+		if p.Name() != "windows-wsl2" {
+			t.Fatalf("on windows: got Name() = %q, want windows-wsl2", p.Name())
+		}
+		if p.Available() {
+			t.Fatal("on windows: builtin stub Available() should return false")
 		}
 	default:
 		if p.Name() != "unsupported" {

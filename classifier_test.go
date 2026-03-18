@@ -1774,8 +1774,8 @@ func TestIsDangerousTarget(t *testing.T) {
 		{"/./", true},
 		{"/.", true},
 		{"/../", true},
-		{"~/.", true},   // normalizes to "~"
-		{"~///", true},  // normalizes to "~"
+		{"~/.", true},  // normalizes to "~"
+		{"~///", true}, // normalizes to "~"
 		// Traversal from home-like prefixes
 		{"~/../", true},
 		{"~/../..", true},
@@ -1783,8 +1783,8 @@ func TestIsDangerousTarget(t *testing.T) {
 		{"${HOME}/../", true},
 		{"$HOME/../../", true},
 		// Traversal from absolute paths caught by path.Clean
-		{"/tmp/../../", true},  // path.Clean -> "/" which is caught
-		{"/home/../..", true},  // path.Clean -> "/" which is caught
+		{"/tmp/../../", true}, // path.Clean -> "/" which is caught
+		{"/home/../..", true}, // path.Clean -> "/" which is caught
 		// Safe paths
 		{"/tmp", false},
 		{"/home/user", false},
@@ -1963,13 +1963,13 @@ func TestMatchIFSBypass(t *testing.T) {
 		{"cat${IFS}/etc/passwd", true},
 		{"echo $IFS", false},
 		{"echo $IFS foo", false},
-		{"$IFS", false},             // standalone at start
-		{"hello world", false},      // no IFS at all
-		{"echo$IFS", true},          // concatenated before
-		{"$IFScat", true},           // concatenated after
-		{"echo ${IFS}cat", true},    // braced form concatenated after
-		{`echo "$IFS"`, false},      // double-quoted standalone
-		{"echo '$IFS'", false},      // single-quoted standalone
+		{"$IFS", false},          // standalone at start
+		{"hello world", false},   // no IFS at all
+		{"echo$IFS", true},       // concatenated before
+		{"$IFScat", true},        // concatenated after
+		{"echo ${IFS}cat", true}, // braced form concatenated after
+		{`echo "$IFS"`, false},   // double-quoted standalone
+		{"echo '$IFS'", false},   // single-quoted standalone
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {

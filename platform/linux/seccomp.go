@@ -97,19 +97,19 @@ type seccompSyscalls struct {
 	sysChroot         uint32
 
 	// Miscellaneous privileged operations.
-	sysAcct           uint32
-	sysKcmp           uint32
-	sysAddKey         uint32
-	sysRequestKey     uint32
-	sysKeyctl         uint32
-	sysLookupDcookie  uint32
-	sysMbind          uint32
-	sysMovePages      uint32
-	sysIoperm         uint32 // x86 only; 0 on arm64
-	sysIopl           uint32 // x86 only; 0 on arm64
-	sysClockSettime   uint32
-	sysSettimeofday   uint32
-	sysNfsservctl     uint32
+	sysAcct          uint32
+	sysKcmp          uint32
+	sysAddKey        uint32
+	sysRequestKey    uint32
+	sysKeyctl        uint32
+	sysLookupDcookie uint32
+	sysMbind         uint32
+	sysMovePages     uint32
+	sysIoperm        uint32 // x86 only; 0 on arm64
+	sysIopl          uint32 // x86 only; 0 on arm64
+	sysClockSettime  uint32
+	sysSettimeofday  uint32
+	sysNfsservctl    uint32
 }
 
 // seccompArchFor returns the audit architecture constant and syscall numbers

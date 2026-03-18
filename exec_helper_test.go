@@ -5,12 +5,15 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/zhangyunhao116/agentbox/testutil"
 )
 
 // TestExecHelperBasic verifies that execHelper captures stdout and returns
 // the correct exit code.
 func TestExecHelperBasic(t *testing.T) {
-	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "echo hello")
+	shell, args := testutil.EchoCommand("hello")
+	cmd := exec.CommandContext(context.Background(), shell, args...)
 	result, err := execHelper(cmd, 0, false)
 	if err != nil {
 		t.Fatalf("execHelper() error: %v", err)
@@ -29,7 +32,8 @@ func TestExecHelperBasic(t *testing.T) {
 // TestExecHelperSandboxedFlag verifies that the sandboxed flag is correctly
 // propagated to the result.
 func TestExecHelperSandboxedFlag(t *testing.T) {
-	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "echo test")
+	shell, args := testutil.EchoCommand("test")
+	cmd := exec.CommandContext(context.Background(), shell, args...)
 	result, err := execHelper(cmd, 0, true)
 	if err != nil {
 		t.Fatalf("execHelper() error: %v", err)
@@ -42,7 +46,8 @@ func TestExecHelperSandboxedFlag(t *testing.T) {
 // TestExecHelperNonZeroExit verifies that non-zero exit codes are captured
 // without returning a Go error.
 func TestExecHelperNonZeroExit(t *testing.T) {
-	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "exit 42")
+	shell, args := testutil.ExitCommand(42)
+	cmd := exec.CommandContext(context.Background(), shell, args...)
 	result, err := execHelper(cmd, 0, false)
 	if err != nil {
 		t.Fatalf("execHelper() error: %v", err)
@@ -55,7 +60,8 @@ func TestExecHelperNonZeroExit(t *testing.T) {
 // TestExecHelperMaxOutput verifies that output is truncated when maxOutput
 // is set.
 func TestExecHelperMaxOutput(t *testing.T) {
-	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "echo 'this is a long output string that exceeds the limit'")
+	shell, args := testutil.EchoCommand("this is a long output string that exceeds the limit")
+	cmd := exec.CommandContext(context.Background(), shell, args...)
 	result, err := execHelper(cmd, 10, false)
 	if err != nil {
 		t.Fatalf("execHelper() error: %v", err)
@@ -70,7 +76,8 @@ func TestExecHelperMaxOutput(t *testing.T) {
 
 // TestExecHelperStderr verifies that stderr is captured.
 func TestExecHelperStderr(t *testing.T) {
-	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "echo error >&2")
+	shell, args := testutil.StderrCommand("error")
+	cmd := exec.CommandContext(context.Background(), shell, args...)
 	result, err := execHelper(cmd, 0, false)
 	if err != nil {
 		t.Fatalf("execHelper() error: %v", err)
@@ -82,7 +89,8 @@ func TestExecHelperStderr(t *testing.T) {
 
 // TestExecHelperDuration verifies that duration is positive.
 func TestExecHelperDuration(t *testing.T) {
-	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "echo test")
+	shell, args := testutil.EchoCommand("test")
+	cmd := exec.CommandContext(context.Background(), shell, args...)
 	result, err := execHelper(cmd, 0, false)
 	if err != nil {
 		t.Fatalf("execHelper() error: %v", err)

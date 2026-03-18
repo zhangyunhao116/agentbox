@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  test-unix:
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest]
@@ -38,6 +38,24 @@ jobs:
         with:
           name: coverage-${{ matrix.os }}
           path: coverage.out
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
 
   lint:
     runs-on: ubuntu-latest

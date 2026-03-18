@@ -1,3 +1,5 @@
+// Package envutil provides utilities for sanitizing and filtering environment
+// variables in sandboxed command execution.
 package envutil
 
 import (
@@ -106,15 +108,15 @@ func MergeEnv(base, additional []string) []string {
 // sensitiveExactKeys is the set of environment variable names that are
 // unconditionally removed by SanitizeEnv.
 var sensitiveExactKeys = map[string]bool{
-	"LD_PRELOAD":         true,
-	"LD_LIBRARY_PATH":    true,
+	"LD_PRELOAD":            true,
+	"LD_LIBRARY_PATH":       true,
 	"AWS_SECRET_ACCESS_KEY": true,
-	"AWS_SESSION_TOKEN":  true,
-	"GITHUB_TOKEN":       true,
-	"GH_TOKEN":           true,
-	"GITHUB_PAT":         true,
-	"DOCKER_AUTH_CONFIG":  true,
-	"NPM_TOKEN":          true,
+	"AWS_SESSION_TOKEN":     true,
+	"GITHUB_TOKEN":          true,
+	"GH_TOKEN":              true,
+	"GITHUB_PAT":            true,
+	"DOCKER_AUTH_CONFIG":    true,
+	"NPM_TOKEN":             true,
 }
 
 // sensitiveSuffixes lists the upper-case suffixes that cause a variable to be

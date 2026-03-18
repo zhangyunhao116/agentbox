@@ -260,4 +260,3 @@ func landlockAddPathRule(rulesetFd int, path string, allowedAccess uint64) error
 
 	return nil
 }
-
