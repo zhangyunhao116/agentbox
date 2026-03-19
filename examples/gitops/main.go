@@ -158,41 +158,54 @@ func run() error {
 	defer mgr.Cleanup(ctx)
 
 	// Bootstrap a git repo so the read-only commands have something to work with.
-	initCmds := fmt.Sprintf(
-		"cd %s && git init && "+
-			"git config user.email 'test@example.com' && "+
-			"git config user.name 'Test' && "+
-			"echo 'hello' > README.md && "+
-			"git add . && "+
-			"git commit -m 'init'",
-		tmpdir,
-	)
-	result, err := mgr.Exec(ctx, initCmds)
-	if err != nil {
-		return fmt.Errorf("git init: %w", err)
+	// Use os.WriteFile for file creation and ExecArgs for git commands.
+	if err := os.WriteFile(tmpdir+"/README.md", []byte("hello\n"), 0o644); err != nil {
+		return fmt.Errorf("write README.md: %w", err)
 	}
-	if result.ExitCode != 0 {
-		return fmt.Errorf("git init failed: exit=%d stderr=%q", result.ExitCode, result.Stderr)
+
+	// Run git commands using ExecArgs for safety.
+	gitCmds := []struct {
+		args []string
+		desc string
+	}{
+		{[]string{"init"}, "git init"},
+		{[]string{"config", "user.email", "test@example.com"}, "git config email"},
+		{[]string{"config", "user.name", "Test"}, "git config name"},
+		{[]string{"add", "."}, "git add"},
+		{[]string{"commit", "-m", "init"}, "git commit"},
+	}
+
+	for _, cmd := range gitCmds {
+		result, err := mgr.ExecArgs(ctx, "git", cmd.args, agentbox.WithWorkingDir(tmpdir))
+		if err != nil {
+			return fmt.Errorf("%s: %w", cmd.desc, err)
+		}
+		if result.ExitCode != 0 {
+			return fmt.Errorf("%s failed: exit=%d stderr=%q", cmd.desc, result.ExitCode, result.Stderr)
+		}
 	}
 	fmt.Printf("Repository initialised in temp dir.\n\n")
 
 	// ---------------------------------------------------------------
 	// 1. Read-only git commands — these should succeed (decision=Allow).
 	// ---------------------------------------------------------------
-	safeCommands := []string{
-		fmt.Sprintf("git -C %s status", tmpdir),
-		fmt.Sprintf("git -C %s log --oneline", tmpdir),
-		fmt.Sprintf("git -C %s diff HEAD", tmpdir),
+	safeCommands := []struct {
+		args []string
+		desc string
+	}{
+		{[]string{"-C", tmpdir, "status"}, "git status"},
+		{[]string{"-C", tmpdir, "log", "--oneline"}, "git log"},
+		{[]string{"-C", tmpdir, "diff", "HEAD"}, "git diff"},
 	}
 
 	fmt.Println("=== Read-only git commands (should succeed) ===")
 	for _, cmd := range safeCommands {
-		result, err = mgr.Exec(ctx, cmd)
+		result, err := mgr.ExecArgs(ctx, "git", cmd.args)
 		if err != nil {
-			fmt.Printf("  %s\n    error: %v\n", cmd, err)
+			fmt.Printf("  %s\n    error: %v\n", cmd.desc, err)
 			continue
 		}
-		fmt.Printf("  %s\n    exit=%d sandboxed=%v\n", cmd, result.ExitCode, result.Sandboxed)
+		fmt.Printf("  %s\n    exit=%d sandboxed=%v\n", cmd.desc, result.ExitCode, result.Sandboxed)
 	}
 
 	// ---------------------------------------------------------------
@@ -217,16 +230,15 @@ func run() error {
 	// 3. Execute git push — triggers the approval callback and is denied.
 	// ---------------------------------------------------------------
 	fmt.Println("\n=== Execute escalated command (should be denied) ===")
-	pushCmd := fmt.Sprintf("git -C %s push origin main", tmpdir)
-	_, err = mgr.Exec(ctx, pushCmd)
+	_, err = mgr.ExecArgs(ctx, "git", []string{"-C", tmpdir, "push", "origin", "main"})
 	if err != nil {
 		if errors.Is(err, agentbox.ErrEscalatedCommand) {
-			fmt.Printf("  %s\n    correctly denied: %v\n", pushCmd, err)
+			fmt.Printf("  git push\n    correctly denied: %v\n", err)
 		} else {
-			fmt.Printf("  %s\n    error: %v\n", pushCmd, err)
+			fmt.Printf("  git push\n    error: %v\n", err)
 		}
 	} else {
-		fmt.Printf("  %s\n    unexpectedly succeeded\n", pushCmd)
+		fmt.Printf("  git push\n    unexpectedly succeeded\n")
 	}
 
 	fmt.Println("\nDone.")

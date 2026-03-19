@@ -860,11 +860,11 @@ func TestBridgePair_StartSOCKSFails(t *testing.T) {
 	socksSocketFile := bp.SOCKS.SocketPath()
 
 	// Create a directory at the socket path to prevent listen.
-	if err := os.MkdirAll(socksSocketFile, 0755); err != nil {
+	if err := os.MkdirAll(socksSocketFile, 0o755); err != nil {
 		t.Fatalf("failed to create blocking dir: %v", err)
 	}
 	// Also create a file inside to prevent removal.
-	if err := os.WriteFile(filepath.Join(socksSocketFile, "blocker"), []byte("x"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(socksSocketFile, "blocker"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("failed to create blocker file: %v", err)
 	}
 	_ = socksSocketDir
@@ -982,7 +982,7 @@ func TestBridge_Start_RemoveStaleSocketError(t *testing.T) {
 	// Create a directory at the socket path to prevent os.Remove from
 	// succeeding (removing a non-empty directory fails).
 	socketPath := filepath.Join(dir, "test.sock")
-	if err := os.MkdirAll(filepath.Join(socketPath, "subdir"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(socketPath, "subdir"), 0o755); err != nil {
 		t.Fatalf("failed to create blocking dir: %v", err)
 	}
 
@@ -1143,7 +1143,7 @@ func TestBridge_Shutdown_SocketRemoveError(t *testing.T) {
 	os.Remove(socketPath)
 
 	// Create a non-empty directory at the socket path.
-	if err := os.MkdirAll(filepath.Join(socketPath, "subdir"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(socketPath, "subdir"), 0o755); err != nil {
 		t.Fatalf("failed to create blocking dir: %v", err)
 	}
 

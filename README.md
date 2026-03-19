@@ -388,6 +388,48 @@ if !check.OK() {
 
 `DependencyCheck` is a type alias for the platform-specific dependency check result. It exposes an `OK()` method and an `Errors` field listing any missing dependencies.
 
+## Performance
+
+Benchmarks comparing agentbox against other sandbox solutions for executing simple shell commands (`echo hello` and `go version`). All measurements use [hyperfine](https://github.com/sharkdp/hyperfine) for cold-start and hot-start latency, plus native batch execution for sustained throughput.
+
+### Cold-start latency
+
+Comparison of first-run overhead with no warmup (hyperfine `--warmup 0`):
+
+| Platform | agentbox | codex¹ | srt² | bare |
+|----------|----------|--------|------|------|
+| macOS (Apple M3 Pro) | **16 ms** | 26 ms | 158 ms | 1.3 ms |
+| Linux (Xeon Gold 6133) | **30 ms** | 77 ms | 517 ms | 0.9 ms |
+| Windows (Xeon Platinum, WSL) | 640 ms | **186 ms** | N/A³ | 43 ms |
+
+### Hot-start latency
+
+Sustained per-call overhead after warmup (hyperfine `--warmup 10`):
+
+| Platform | agentbox | codex | srt |
+|----------|----------|-------|-----|
+| macOS | **16 ms** | 25 ms | 154 ms |
+| Linux | **30 ms** | 77 ms | 497 ms |
+| Windows | 631 ms | **187 ms** | N/A |
+
+### Sustained throughput
+
+Batch execution of 100 `echo hello` calls using agentbox `ExecArgs`:
+
+| Platform | Mean | P50 | P95 |
+|----------|------|-----|-----|
+| macOS | 12.5 ms | 12.1 ms | 13.9 ms |
+| Linux | 21.3 ms | 21.0 ms | 23.1 ms |
+| Windows | 156 ms | 154 ms | 167 ms |
+
+**Notes:**
+
+1. **codex** = [OpenAI Codex CLI](https://github.com/openai/codex) 0.80–0.115 (Rust). Uses Seatbelt (macOS), bubblewrap+Landlock (Linux), Restricted Token (Windows).
+2. **srt** = [Claude Code sandbox-runtime](https://github.com/anthropics/sandbox-runtime) 1.0 (Node.js). Uses sandbox-exec (macOS), bubblewrap (Linux).
+3. srt does not support Windows.
+
+Bare execution (no sandbox) is shown for reference. Test commands: `echo hello` (cold/hot), `go version` (verification). macOS tested on Go 1.26.0, Linux on Go 1.23.9 (TencentOS Server, kernel 6.6.47), Windows on Go 1.24.1 (Server 2025, WSL1). Windows performance is constrained by WSL1 overhead; native Windows sandbox implementation is planned for future releases.
+
 ## Architecture
 
 ```

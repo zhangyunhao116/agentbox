@@ -24,8 +24,13 @@
 /networkaccess
 /pathutil
 /projectinit
+/projectscaffold
 /researchflow
+/sandbox-bench
 /sandbox-helper
+/security
+/timeout
+/wrap
 
 # Windows executables
 *.exe
@@ -47,6 +52,9 @@ Thumbs.db
 # Build artifacts
 /bin/
 /dist/
+
+# Benchmark reports (generated on test servers)
+/benchmarks/
 
 # Misc
 /EOF

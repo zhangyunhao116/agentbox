@@ -4,12 +4,16 @@ package darwin
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/zhangyunhao116/agentbox/platform"
 )
@@ -17,12 +21,71 @@ import (
 // Platform implements the platform.Platform interface using macOS sandbox-exec
 // (Seatbelt). It generates SBPL profiles from WrapConfig and rewrites
 // exec.Cmd to run under sandbox-exec.
-type Platform struct{}
+//
+// Profile caching: Generated SBPL profiles are cached keyed by a hash of the
+// WrapConfig fields that affect profile output plus the TMPDIR environment
+// variable. If TMPDIR changes between calls with the same WrapConfig, the
+// cache correctly misses and regenerates the profile.
+type Platform struct {
+	mu            sync.RWMutex
+	cachedKey     uint64 // FNV hash of config fields that affect profile output
+	cachedProfile string
+}
 
 // buildProfile builds an SBPL profile from a WrapConfig.
 // It is a package-level variable so tests can override it to simulate errors.
 var buildProfile = func(cfg *platform.WrapConfig) (string, error) {
 	return newProfileBuilder().Build(cfg)
+}
+
+// profileCacheKey computes a hash of the WrapConfig fields that affect the
+// generated SBPL profile. Fields that don't affect profile output (e.g.,
+// Shell, ResourceLimits, Warnings) are excluded from the hash.
+func profileCacheKey(cfg *platform.WrapConfig) uint64 {
+	h := fnv.New64a()
+
+	// Hash sorted slices to ensure consistent ordering.
+	writeSortedSlice := func(items []string) {
+		sorted := make([]string, len(items))
+		copy(sorted, items)
+		sort.Strings(sorted)
+		for _, item := range sorted {
+			h.Write([]byte(item))
+			h.Write([]byte{0}) // separator
+		}
+	}
+
+	writeSortedSlice(cfg.WritableRoots)
+	writeSortedSlice(cfg.DenyWrite)
+	writeSortedSlice(cfg.DenyRead)
+	writeSortedSlice(cfg.AllowUnixSockets)
+
+	// Hash boolean flags.
+	writeBool := func(b bool) {
+		if b {
+			h.Write([]byte{1})
+		} else {
+			h.Write([]byte{0})
+		}
+	}
+	writeBool(cfg.AllowGitConfig)
+	writeBool(cfg.NeedsNetworkRestriction)
+	writeBool(cfg.AllowLocalBinding)
+	writeBool(cfg.AllowAllUnixSockets)
+
+	// Hash integer proxy ports.
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(cfg.HTTPProxyPort))   //nolint:gosec // port numbers are safe for uint64 conversion
+	h.Write(buf[:])
+	binary.BigEndian.PutUint64(buf[:], uint64(cfg.SOCKSProxyPort)) //nolint:gosec // port numbers are safe for uint64 conversion
+	h.Write(buf[:])
+
+	// Hash TMPDIR env var since getTmpdirParents() in profile.go reads it.
+	tmpdir := os.Getenv("TMPDIR")
+	h.Write([]byte(tmpdir))
+	h.Write([]byte{0})
+
+	return h.Sum64()
 }
 
 // New returns a new Platform instance.
@@ -77,12 +140,43 @@ func (d *Platform) WrapCommand(_ context.Context, cmd *exec.Cmd, cfg *platform.W
 		cfg = &platform.WrapConfig{}
 	}
 
-	// Build the SBPL profile.
+	// Check profile cache before building.
+	cacheKey := profileCacheKey(cfg)
+	d.mu.RLock()
+	if d.cachedKey == cacheKey && d.cachedProfile != "" {
+		profile := d.cachedProfile
+		d.mu.RUnlock()
+		// Cache hit: use cached profile and skip to command rewriting.
+		return d.applyProfile(cmd, cfg, profile)
+	}
+	d.mu.RUnlock()
+
+	// Cache miss: build the profile.
+	d.mu.Lock()
+	// Double-check: another goroutine may have built it while we waited for Lock.
+	if d.cachedKey == cacheKey && d.cachedProfile != "" {
+		profile := d.cachedProfile
+		d.mu.Unlock()
+		return d.applyProfile(cmd, cfg, profile)
+	}
+
 	profile, err := buildProfile(cfg)
 	if err != nil {
+		d.mu.Unlock()
 		return fmt.Errorf("darwin-seatbelt: failed to build profile: %w", err)
 	}
 
+	// Store in cache.
+	d.cachedKey = cacheKey
+	d.cachedProfile = profile
+	d.mu.Unlock()
+
+	return d.applyProfile(cmd, cfg, profile)
+}
+
+// applyProfile rewrites cmd to execute under sandbox-exec with the given
+// profile and applies environment sanitization and proxy configuration.
+func (d *Platform) applyProfile(cmd *exec.Cmd, cfg *platform.WrapConfig, profile string) error {
 	// Resolve the original command path.
 	origPath := cmd.Path
 	if origPath == "" {

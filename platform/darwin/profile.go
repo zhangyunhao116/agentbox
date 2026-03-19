@@ -8,10 +8,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/zhangyunhao116/agentbox/internal/envutil"
 	"github.com/zhangyunhao116/agentbox/platform"
 )
+
+// pathCache caches the results of filepath.EvalSymlinks for canonicalizePath.
+// Paths don't change during process lifetime, so this is safe to share across
+// Platform instances and concurrent goroutines.
+var pathCache sync.Map
 
 // profileBuilder constructs an SBPL (Sandbox Profile Language) profile
 // from a WrapConfig. SBPL uses Scheme-like S-expression syntax.
@@ -387,12 +393,21 @@ func escapeForSBPL(s string) string {
 
 // canonicalizePath resolves symlinks and normalizes the path.
 // On macOS, /tmp -> /private/tmp and /var -> /private/var.
+// Results are cached since paths don't change during process lifetime.
 func canonicalizePath(p string) string {
+	// Check cache first.
+	if cached, ok := pathCache.Load(p); ok {
+		return cached.(string)
+	}
+
 	// Try to resolve symlinks via EvalSymlinks.
 	resolved, err := filepath.EvalSymlinks(p)
 	if err == nil {
-		return filepath.Clean(resolved)
+		result := filepath.Clean(resolved)
+		pathCache.Store(p, result)
+		return result
 	}
+
 	// Fallback: manual mapping for well-known macOS symlinks.
 	cleaned := filepath.Clean(p)
 	if cleaned == "/tmp" || strings.HasPrefix(cleaned, "/tmp/") {
@@ -401,6 +416,8 @@ func canonicalizePath(p string) string {
 	if cleaned == "/var" || strings.HasPrefix(cleaned, "/var/") {
 		cleaned = "/private" + cleaned
 	}
+
+	pathCache.Store(p, cleaned)
 	return cleaned
 }
 

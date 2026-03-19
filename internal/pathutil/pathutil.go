@@ -135,6 +135,21 @@ func ExpandGlob(pattern string, maxDepth int) ([]string, error) {
 		return nil, nil
 	}
 
+	// Fast path: try Go's built-in filepath.Glob for patterns that it
+	// can handle natively (single-level wildcards like "/proc/*/mem").
+	// filepath.Glob does NOT support "**" (recursive glob), so we only
+	// use this fast path for patterns without "**". This avoids walking
+	// huge virtual filesystems like /proc (which can have 100K+ entries
+	// on busy systems).
+	if !strings.Contains(pattern, "**") {
+		if globMatches, err := filepath.Glob(pattern); err == nil {
+			// filepath.Glob returns nil for no matches (not an error).
+			return globMatches, nil
+		}
+	}
+
+	// Slow path: fall back to filepath.Walk for complex patterns that
+	// filepath.Glob cannot handle (e.g., recursive globs, regex-like).
 	// Determine the root: walk up until we find a component without globs.
 	// filepath.Dir always converges to "." or "/" which contain no glob chars,
 	// so this loop always terminates.

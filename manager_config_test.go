@@ -1825,7 +1825,7 @@ func TestBuildWrapConfigExistentPathNoWarning(t *testing.T) {
 	// Use paths that definitely exist.
 	existingDir := t.TempDir()
 	existingFile := filepath.Join(existingDir, "testfile")
-	if err := os.WriteFile(existingFile, []byte("test"), 0644); err != nil {
+	if err := os.WriteFile(existingFile, []byte("test"), 0o644); err != nil {
 		t.Fatalf("WriteFile error: %v", err)
 	}
 

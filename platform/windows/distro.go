@@ -21,13 +21,15 @@ const (
 	// alpineSHA256 is the SHA256 of the Alpine minirootfs tarball.
 	// Update when alpineVersion changes.
 	alpineSHA256 = "1a694899e406ce55d32334c47ac0b2efb6c06d7e878102d1840892ad44cd5239"
+)
 
-	// wslConfContent is the /etc/wsl.conf written into the sandbox distro.
-	// Security-critical: interop disabled, non-root user.
-	// Note: automount uses metadata mode (not read-only) because Simple Mode
-	// relies on the unprivileged sandbox user for write control rather than
-	// filesystem mount options. Full Mode adds Landlock for fine-grained access.
-	wslConfContent = `[interop]
+// wslConfContent returns the /etc/wsl.conf content written into the sandbox distro.
+// Security-critical: interop disabled, non-root user.
+// Note: automount uses metadata mode (not read-only) because Simple Mode
+// relies on the unprivileged sandbox user for write control rather than
+// filesystem mount options. Full Mode adds Landlock for fine-grained access.
+func wslConfContent() string {
+	return `[interop]
 enabled=false
 appendWindowsPath=false
 
@@ -40,14 +42,14 @@ mountFsTab=false
 default=sandbox
 
 [network]
-hostname=agentbox-sb
+hostname=` + defaultDistroName + `
 generateHosts=false
 generateResolvConf=true
 
 [boot]
 systemd=false
 `
-)
+}
 
 // provisionDistro imports a fresh Alpine rootfs as a WSL2 distro and
 // configures it for sandboxed execution.
@@ -75,7 +77,7 @@ func (p *Platform) provisionDistro(ctx context.Context) error {
 	// Write /etc/wsl.conf for sandbox hardening.
 	writeConf := wslCommandContext(ctx, p.wslPath,
 		"-d", p.distroName, "-e", "sh", "-c",
-		fmt.Sprintf("cat > /etc/wsl.conf << 'EOF'\n%sEOF", wslConfContent))
+		fmt.Sprintf("cat > /etc/wsl.conf << 'EOF'\n%sEOF", wslConfContent()))
 	if out, err := writeConf.CombinedOutput(); err != nil {
 		return fmt.Errorf("writing wsl.conf: %s: %w", string(out), err)
 	}

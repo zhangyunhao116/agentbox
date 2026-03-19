@@ -3,6 +3,8 @@
 package darwin
 
 import (
+	"context"
+	"os/exec"
 	"testing"
 
 	"github.com/zhangyunhao116/agentbox/platform"
@@ -71,3 +73,61 @@ func BenchmarkCanonicalizePath(b *testing.B) {
 		canonicalizePath("/tmp/test")
 	}
 }
+
+// BenchmarkCanonicalizePath_Cached benchmarks path canonicalization
+// with a warm cache (sync.Map hit path).
+func BenchmarkCanonicalizePath_Cached(b *testing.B) {
+	// Warm up cache
+	canonicalizePath("/tmp/test")
+	b.ResetTimer()
+	for b.Loop() {
+		canonicalizePath("/tmp/test")
+	}
+}
+
+
+// BenchmarkWrapCommand_Cached benchmarks WrapCommand with repeated calls using
+// the same configuration to measure cache hit performance.
+func BenchmarkWrapCommand_Cached(b *testing.B) {
+	p := New()
+	ctx := context.Background()
+	cfg := &platform.WrapConfig{
+		WritableRoots: []string{"/tmp/test"},
+		DenyWrite:     []string{"/usr"},
+	}
+
+	// Warm up the cache.
+	cmd := exec.CommandContext(ctx, "/bin/echo", "warmup")
+	if err := p.WrapCommand(ctx, cmd, cfg); err != nil {
+		b.Fatalf("Warmup error: %v", err)
+	}
+
+	b.ResetTimer()
+	for b.Loop() {
+		cmd := exec.CommandContext(ctx, "/bin/echo", "hello")
+		if err := p.WrapCommand(ctx, cmd, cfg); err != nil {
+			b.Fatalf("WrapCommand error: %v", err)
+		}
+	}
+}
+
+// BenchmarkWrapCommand_CacheMiss benchmarks WrapCommand with varying configs
+// that produce cache misses on each call.
+func BenchmarkWrapCommand_CacheMiss(b *testing.B) {
+	p := New()
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Use loop index to vary the configuration on each iteration.
+		cfg := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			HTTPProxyPort: i % 10000, // Vary port to force cache miss
+		}
+		cmd := exec.CommandContext(ctx, "/bin/echo", "hello")
+		if err := p.WrapCommand(ctx, cmd, cfg); err != nil {
+			b.Fatalf("WrapCommand error: %v", err)
+		}
+	}
+}
+

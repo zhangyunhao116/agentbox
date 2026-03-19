@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zhangyunhao116/agentbox/internal/pathutil"
 	"github.com/zhangyunhao116/agentbox/platform"
@@ -537,6 +538,13 @@ func (m *manager) runCommand(ctx context.Context, cmd *exec.Cmd, co *callOptions
 	// Inject proxy environment variables when proxy is active.
 	m.injectProxyEnv(cmd)
 
+	// Try worker fast path if platform supports it.
+	if we, ok := m.platform.(platform.WorkerExecutor); ok {
+		if result := m.tryWorkerExec(ctx, we, cmd, wcfg, snap.cfg.MaxOutputBytes); result != nil {
+			return result, nil
+		}
+	}
+
 	// Wrap with platform sandbox (fail-closed by default).
 	sandboxed := true
 	if err := m.platform.WrapCommand(ctx, cmd, wcfg); err != nil {
@@ -550,6 +558,53 @@ func (m *manager) runCommand(ctx context.Context, cmd *exec.Cmd, co *callOptions
 
 	return execHelper(cmd, snap.cfg.MaxOutputBytes, sandboxed)
 }
+
+// tryWorkerExec attempts to execute a command via the worker fast path.
+// Returns nil if the worker is unavailable or encounters an error (caller should fall back).
+func (m *manager) tryWorkerExec(ctx context.Context, we platform.WorkerExecutor, cmd *exec.Cmd, wcfg *platform.WrapConfig, maxOutput int) *ExecResult {
+	start := time.Now()
+	result, err := we.ExecViaWorker(ctx, wcfg, cmd.Path, cmd.Args, cmd.Dir, cmd.Environ(), maxOutput)
+	if err != nil || result == nil {
+		// Worker error or unavailable — caller will fall back to standard path.
+		return nil
+	}
+
+	// Worker handled it — convert to ExecResult.
+	duration := time.Since(start)
+	stdout := string(result.Stdout)
+	stderr := string(result.Stderr)
+	truncated := false
+
+	// Apply MaxOutputBytes truncation if needed.
+	if maxOutput > 0 {
+		if len(result.Stdout) > maxOutput {
+			stdout = string(result.Stdout[:maxOutput])
+			truncated = true
+		}
+		if len(result.Stderr) > maxOutput {
+			stderr = string(result.Stderr[:maxOutput])
+			truncated = true
+		}
+	}
+
+	// Append worker error to stderr if present.
+	if result.Error != "" {
+		if stderr != "" {
+			stderr += "\n"
+		}
+		stderr += result.Error
+	}
+
+	return &ExecResult{
+		ExitCode:  result.ExitCode,
+		Stdout:    stdout,
+		Stderr:    stderr,
+		Duration:  duration,
+		Sandboxed: true,
+		Truncated: truncated,
+	}
+}
+
 
 func (m *manager) Check(ctx context.Context, command string) (ClassifyResult, error) {
 	snap, err := m.snapshotConfig()

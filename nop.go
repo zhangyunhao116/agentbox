@@ -261,7 +261,9 @@ func (n *nopManager) Cleanup(_ context.Context) error {
 	return nil
 }
 
-func (n *nopManager) Available() bool { return true }
+// Available returns false because nopManager is a fallback that runs commands
+// WITHOUT sandboxing. It should not be reported as an available sandbox.
+func (n *nopManager) Available() bool { return false }
 
 func (n *nopManager) CheckDependencies() *DependencyCheck {
 	return &DependencyCheck{}

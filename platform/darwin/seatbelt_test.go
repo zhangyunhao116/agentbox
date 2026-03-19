@@ -673,3 +673,312 @@ func TestWrapCommand_BuildProfileError(t *testing.T) {
 		t.Errorf("error should mention build failure, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Profile cache tests
+// ---------------------------------------------------------------------------
+
+// TestProfileCacheHit verifies that WrapCommand uses cached profiles when
+// called multiple times with the same configuration.
+func TestProfileCacheHit(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+
+	// Override buildProfile to count how many times it's called.
+	originalBuild := buildProfile
+	defer func() { buildProfile = originalBuild }()
+
+	buildCount := 0
+	buildProfile = func(cfg *platform.WrapConfig) (string, error) {
+		buildCount++
+		return originalBuild(cfg)
+	}
+
+	cfg := &platform.WrapConfig{
+		WritableRoots: []string{"/tmp/test"},
+		DenyWrite:     []string{"/usr"},
+	}
+
+	// First call: should build the profile.
+	cmd1 := exec.CommandContext(ctx, "/bin/echo", "first")
+	if err := p.WrapCommand(ctx, cmd1, cfg); err != nil {
+		t.Fatalf("First WrapCommand() error: %v", err)
+	}
+	if buildCount != 1 {
+		t.Fatalf("First call should build profile once, got %d", buildCount)
+	}
+
+	// Second call with same config: should hit cache.
+	cmd2 := exec.CommandContext(ctx, "/bin/echo", "second")
+	if err := p.WrapCommand(ctx, cmd2, cfg); err != nil {
+		t.Fatalf("Second WrapCommand() error: %v", err)
+	}
+	if buildCount != 1 {
+		t.Fatalf("Second call should use cache, buildCount should still be 1, got %d", buildCount)
+	}
+
+	// Third call with same config: should hit cache again.
+	cmd3 := exec.CommandContext(ctx, "/bin/echo", "third")
+	if err := p.WrapCommand(ctx, cmd3, cfg); err != nil {
+		t.Fatalf("Third WrapCommand() error: %v", err)
+	}
+	if buildCount != 1 {
+		t.Fatalf("Third call should use cache, buildCount should still be 1, got %d", buildCount)
+	}
+}
+
+// TestProfileCacheMiss verifies that different configurations result in cache
+// misses and trigger profile rebuilds.
+func TestProfileCacheMiss(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+
+	// Override buildProfile to count calls.
+	originalBuild := buildProfile
+	defer func() { buildProfile = originalBuild }()
+
+	buildCount := 0
+	buildProfile = func(cfg *platform.WrapConfig) (string, error) {
+		buildCount++
+		return originalBuild(cfg)
+	}
+
+	cfg1 := &platform.WrapConfig{
+		WritableRoots: []string{"/tmp/test1"},
+	}
+
+	cfg2 := &platform.WrapConfig{
+		WritableRoots: []string{"/tmp/test2"}, // Different path
+	}
+
+	cmd1 := exec.CommandContext(ctx, "/bin/echo", "first")
+	if err := p.WrapCommand(ctx, cmd1, cfg1); err != nil {
+		t.Fatalf("WrapCommand(cfg1) error: %v", err)
+	}
+	if buildCount != 1 {
+		t.Fatalf("First call should build profile, got buildCount=%d", buildCount)
+	}
+
+	cmd2 := exec.CommandContext(ctx, "/bin/echo", "second")
+	if err := p.WrapCommand(ctx, cmd2, cfg2); err != nil {
+		t.Fatalf("WrapCommand(cfg2) error: %v", err)
+	}
+	if buildCount != 2 {
+		t.Fatalf("Second call with different config should rebuild, got buildCount=%d", buildCount)
+	}
+}
+
+// TestProfileCacheConcurrent verifies that the profile cache is safe for
+// concurrent access from multiple goroutines.
+func TestProfileCacheConcurrent(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+
+	cfg := &platform.WrapConfig{
+		WritableRoots: []string{"/tmp/concurrent"},
+	}
+
+	const numGoroutines = 10
+	errCh := make(chan error, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			cmd := exec.CommandContext(ctx, "/bin/echo", "hello")
+			errCh <- p.WrapCommand(ctx, cmd, cfg)
+		}()
+	}
+
+	for i := 0; i < numGoroutines; i++ {
+		if err := <-errCh; err != nil {
+			t.Errorf("Goroutine %d: WrapCommand() error: %v", i, err)
+		}
+	}
+}
+
+// TestProfileCacheNilConfig verifies that nil config doesn't cause panics.
+func TestProfileCacheNilConfig(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+
+	cmd := exec.CommandContext(ctx, "/bin/echo", "hello")
+	if err := p.WrapCommand(ctx, cmd, nil); err != nil {
+		t.Fatalf("WrapCommand(nil cfg) error: %v", err)
+	}
+
+	// Second call with nil config should also work (cache hit).
+	cmd2 := exec.CommandContext(ctx, "/bin/echo", "world")
+	if err := p.WrapCommand(ctx, cmd2, nil); err != nil {
+		t.Fatalf("WrapCommand(nil cfg) second call error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// profileCacheKey tests
+// ---------------------------------------------------------------------------
+
+// TestProfileCacheKey verifies that profileCacheKey computes hashes correctly
+// for various config field combinations.
+func TestProfileCacheKey(t *testing.T) {
+	t.Run("identical configs produce same hash", func(t *testing.T) {
+		cfg1 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			DenyWrite:     []string{"/usr"},
+			DenyRead:      []string{"/root"},
+		}
+		cfg2 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			DenyWrite:     []string{"/usr"},
+			DenyRead:      []string{"/root"},
+		}
+		key1 := profileCacheKey(cfg1)
+		key2 := profileCacheKey(cfg2)
+		if key1 != key2 {
+			t.Errorf("identical configs produced different hashes: %d vs %d", key1, key2)
+		}
+	})
+
+	t.Run("different WritableRoots produce different hash", func(t *testing.T) {
+		cfg1 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test1"},
+		}
+		cfg2 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test2"},
+		}
+		key1 := profileCacheKey(cfg1)
+		key2 := profileCacheKey(cfg2)
+		if key1 == key2 {
+			t.Error("different WritableRoots should produce different hashes")
+		}
+	})
+
+	t.Run("slices in different order produce same hash", func(t *testing.T) {
+		cfg1 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/a", "/tmp/b", "/tmp/c"},
+		}
+		cfg2 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/c", "/tmp/a", "/tmp/b"},
+		}
+		key1 := profileCacheKey(cfg1)
+		key2 := profileCacheKey(cfg2)
+		if key1 != key2 {
+			t.Error("WritableRoots in different order should produce same hash (sorted)")
+		}
+	})
+
+	t.Run("different Shell produces same hash", func(t *testing.T) {
+		cfg1 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			Shell:         "/bin/sh",
+		}
+		cfg2 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			Shell:         "/bin/bash",
+		}
+		key1 := profileCacheKey(cfg1)
+		key2 := profileCacheKey(cfg2)
+		if key1 != key2 {
+			t.Error("Shell field is not in profile, should produce same hash")
+		}
+	})
+
+	t.Run("different ResourceLimits produce same hash", func(t *testing.T) {
+		cfg1 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			ResourceLimits: &platform.ResourceLimits{
+				MaxFileDescriptors: 256,
+			},
+		}
+		cfg2 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			ResourceLimits: &platform.ResourceLimits{
+				MaxFileDescriptors: 512,
+			},
+		}
+		key1 := profileCacheKey(cfg1)
+		key2 := profileCacheKey(cfg2)
+		if key1 != key2 {
+			t.Error("ResourceLimits are not in profile, should produce same hash")
+		}
+	})
+
+	t.Run("different HTTPProxyPort produces different hash", func(t *testing.T) {
+		cfg1 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			HTTPProxyPort: 8080,
+		}
+		cfg2 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			HTTPProxyPort: 9090,
+		}
+		key1 := profileCacheKey(cfg1)
+		key2 := profileCacheKey(cfg2)
+		if key1 == key2 {
+			t.Error("different HTTPProxyPort should produce different hash")
+		}
+	})
+
+	t.Run("different AllowLocalBinding produces different hash", func(t *testing.T) {
+		cfg1 := &platform.WrapConfig{
+			WritableRoots:     []string{"/tmp/test"},
+			AllowLocalBinding: true,
+		}
+		cfg2 := &platform.WrapConfig{
+			WritableRoots:     []string{"/tmp/test"},
+			AllowLocalBinding: false,
+		}
+		key1 := profileCacheKey(cfg1)
+		key2 := profileCacheKey(cfg2)
+		if key1 == key2 {
+			t.Error("different AllowLocalBinding should produce different hash")
+		}
+	})
+
+	t.Run("different NeedsNetworkRestriction produces different hash", func(t *testing.T) {
+		cfg1 := &platform.WrapConfig{
+			WritableRoots:           []string{"/tmp/test"},
+			NeedsNetworkRestriction: true,
+		}
+		cfg2 := &platform.WrapConfig{
+			WritableRoots:           []string{"/tmp/test"},
+			NeedsNetworkRestriction: false,
+		}
+		key1 := profileCacheKey(cfg1)
+		key2 := profileCacheKey(cfg2)
+		if key1 == key2 {
+			t.Error("different NeedsNetworkRestriction should produce different hash")
+		}
+	})
+
+	t.Run("different DenyWrite produces different hash", func(t *testing.T) {
+		cfg1 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			DenyWrite:     []string{"/usr"},
+		}
+		cfg2 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			DenyWrite:     []string{"/etc"},
+		}
+		key1 := profileCacheKey(cfg1)
+		key2 := profileCacheKey(cfg2)
+		if key1 == key2 {
+			t.Error("different DenyWrite should produce different hash")
+		}
+	})
+
+	t.Run("different DenyRead produces different hash", func(t *testing.T) {
+		cfg1 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			DenyRead:      []string{"/root/.ssh"},
+		}
+		cfg2 := &platform.WrapConfig{
+			WritableRoots: []string{"/tmp/test"},
+			DenyRead:      []string{"/etc/shadow"},
+		}
+		key1 := profileCacheKey(cfg1)
+		key2 := profileCacheKey(cfg2)
+		if key1 == key2 {
+			t.Error("different DenyRead should produce different hash")
+		}
+	})
+}
+

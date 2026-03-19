@@ -664,10 +664,10 @@ func TestNewManagerFallbackWarnNopManager(t *testing.T) {
 	}
 	defer mgr.Cleanup(context.Background())
 
-	// Should return a NopManager. NopManager.Available() returns true because
-	// the manager itself is usable (it just doesn't enforce sandboxing).
-	if !mgr.Available() {
-		t.Error("NopManager should report as available")
+	// Should return a NopManager. NopManager.Available() returns false because
+	// it doesn't enforce real sandboxing.
+	if mgr.Available() {
+		t.Error("NopManager should report as unavailable (no real sandboxing)")
 	}
 }
 
@@ -705,8 +705,8 @@ func TestBuildWrapConfigGlobExpansion(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(tmpDir) })
 
 	// Create test files.
-	os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("test"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "test.log"), []byte("log"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("test"), 0o644)
+	os.WriteFile(filepath.Join(tmpDir, "test.log"), []byte("log"), 0o644)
 
 	cfg := DefaultConfig()
 	cfg.Shell = testutil.Shell()

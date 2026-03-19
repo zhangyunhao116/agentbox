@@ -40,10 +40,20 @@ type reExecConfig struct {
 }
 
 // MaybeSandboxInit checks if the current process was launched in re-exec
-// sandbox-init mode. If so, it applies the sandbox configuration and returns
-// true (the caller should then exec the real command). If not in re-exec mode,
-// it returns false and the caller continues normally.
+// sandbox-init mode or worker mode. If in worker mode, it enters the worker
+// main loop. If in re-exec mode, it applies the sandbox configuration and
+// execs the real command. If neither, it returns false and the caller continues
+// normally.
 func MaybeSandboxInit() bool {
+	// Check for worker mode first.
+	sockPath := os.Getenv(workerEnvKey)
+	if sockPath != "" {
+		code := workerMain(sockPath)
+		osExitFn(code)
+		return true // unreachable
+	}
+
+	// Check for re-exec mode.
 	fdStr := os.Getenv(reExecEnvKey)
 	if fdStr == "" {
 		return false
