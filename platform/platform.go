@@ -140,6 +140,53 @@ func DefaultResourceLimits() *ResourceLimits {
 	}
 }
 
+// WorkerExecResult contains the result of a worker-executed command.
+// It mirrors the key fields of ExecResult but is specialized for the
+// worker fast path communication protocol.
+type WorkerExecResult struct {
+	// Stdout is the raw standard output from the command.
+	Stdout []byte
+
+	// Stderr is the raw standard error from the command.
+	Stderr []byte
+
+	// ExitCode is the command's exit code (0 for success, non-zero for failure).
+	ExitCode int
+
+	// Error is a worker-level error message (not a command error).
+	// Empty string means no worker error occurred.
+	// Command failures (non-zero exit) are indicated via ExitCode, not Error.
+	Error string
+}
+
+// WorkerExecutor is an optional interface that Platform implementations can
+// provide to execute commands via a persistent sandbox worker process.
+// This avoids re-exec overhead for each command, significantly reducing latency.
+//
+// The manager checks for this interface via type assertion and uses the fast
+// path when available, falling back to WrapCommand + exec when not.
+//
+// Implementations must return (nil, nil) if the worker is not available,
+// signaling the caller to fall back to the standard WrapCommand path.
+type WorkerExecutor interface {
+	// ExecViaWorker executes a command through the persistent worker.
+	// Returns (nil, nil) if the worker is not available — the caller should
+	// fall back to the standard WrapCommand path.
+	//
+	// Parameters:
+	//   ctx: context for cancellation and timeouts
+	//   cfg: sandbox configuration (same as WrapCommand)
+	//   name: resolved command path (e.g., /usr/bin/ls)
+	//   args: command arguments including argv[0]
+	//   dir: working directory for the command
+	//   env: environment variables (full set, not just overrides)
+	//
+	// Returns:
+	//   result: execution result with stdout/stderr/exit code
+	//   error: worker communication error (nil if worker handled it)
+	ExecViaWorker(ctx context.Context, cfg *WrapConfig, name string, args []string, dir string, env []string) (*WorkerExecResult, error)
+}
+
 // Detect returns the appropriate Platform for the current OS.
 // On darwin: returns a platform that uses sandbox-exec (Seatbelt).
 // On linux: returns a platform that uses namespaces + Landlock.

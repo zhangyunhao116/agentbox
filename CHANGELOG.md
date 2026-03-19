@@ -11,8 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **testutil**: New test utility package providing cross-platform helpers for Windows test compatibility — `Shell()`, `ShellArgs()`, `EchoCommand()`, `ExitCommand()`, `PrintEnvCommand()`, `PwdCommand()`, `StderrCommand()`, `SleepCommand()`, `TempDir()`, `TempPath()`, `HomeDir()`, `SkipIfWindows()`, `SkipIfNotWindows()`, `RequireUnix()`.
 
+- **platform/linux**: Persistent sandbox worker (Zygote mode) — maintains a pre-sandboxed worker process that handles commands via Unix socket IPC, eliminating per-command Go runtime restart. Reduces Linux sandbox overhead from ~140ms to ~20µs protocol round-trip. Falls back to re-exec when worker is unavailable. Note: worker mode uses the broadest Landlock config from Manager initialization; per-command Landlock tightening is planned for a future release.
+- **platform**: New `WorkerExecutor` optional interface for platforms to provide fast command execution via persistent workers.
+
 ### Changed
 
+- **platform/darwin**: Add profile string cache (Tier 1) — repeated `WrapCommand` calls with identical configs skip profile rebuild (~7x speedup)
+- **platform/darwin**: Add path canonicalization cache (Tier 2) — `filepath.EvalSymlinks` results cached via `sync.Map` to avoid repeated syscalls
 - **tests**: Migrated ~60 Windows `t.Skip` patterns across 20+ test files to use `testutil` helpers, enabling meaningful test execution on Windows CI.
 - **ci**: Expanded Windows CI test scope from limited subsets to full `go test ./...`.
 

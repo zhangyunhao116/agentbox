@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"sync"
+	"time"
 
 	"github.com/zhangyunhao116/agentbox/platform"
 )
@@ -13,8 +15,11 @@ import (
 // Platform implements the platform.Platform interface using Linux namespaces,
 // Landlock filesystem restrictions, and seccomp BPF filters.
 type Platform struct {
+	mu            sync.Mutex
 	kernelVersion KernelVersion
 	landlockABI   int
+	worker        *workerClient // persistent worker (nil if not started)
+	workerErr     error         // error from starting worker (prevents retry)
 }
 
 // New creates a new Platform, detecting kernel version and Landlock
@@ -95,8 +100,88 @@ func (l *Platform) WrapCommand(_ context.Context, cmd *exec.Cmd, cfg *platform.W
 }
 
 // Cleanup releases platform-specific resources. For the Linux namespace
-// platform, this is currently a no-op since namespaces are cleaned up
-// automatically when the sandboxed process exits.
+// platform, this stops the persistent worker process if running.
 func (l *Platform) Cleanup(_ context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.worker != nil {
+		err := l.worker.stop()
+		l.worker = nil
+		return err
+	}
 	return nil
 }
+
+// ensureWorker starts the persistent sandbox worker on first call.
+// Subsequent calls return the existing worker or nil if worker failed to start.
+// Caller must hold l.mu.
+func (l *Platform) ensureWorkerUnlocked(cfg *platform.WrapConfig) *workerClient {
+	if l.worker != nil {
+		if l.worker.alive() {
+			return l.worker
+		}
+		// Worker died, clean it up and allow retry.
+		_ = l.worker.stop()
+		l.worker = nil
+		l.workerErr = nil
+	}
+	if l.workerErr != nil {
+		return nil // Previously failed, don't retry
+	}
+
+	// Build base config from the WrapConfig.
+	baseCfg := reExecConfig{
+		WritableRoots:           cfg.WritableRoots,
+		DenyWrite:               cfg.DenyWrite,
+		DenyRead:                cfg.DenyRead,
+		NeedsNetworkRestriction: cfg.NeedsNetworkRestriction,
+		ResourceLimits:          cfg.ResourceLimits,
+	}
+
+	w, err := startWorker(baseCfg)
+	if err != nil {
+		l.workerErr = err
+		return nil
+	}
+	l.worker = w
+	return w
+}
+
+// ExecViaWorker executes a command via the persistent worker process.
+// Returns nil, nil if worker is not available (caller should fall back to re-exec).
+func (l *Platform) ExecViaWorker(ctx context.Context, cfg *platform.WrapConfig, name string, args []string, dir string, env []string) (*platform.WorkerExecResult, error) {
+	l.mu.Lock()
+	w := l.ensureWorkerUnlocked(cfg)
+	l.mu.Unlock()
+
+	if w == nil {
+		return nil, nil // No worker, caller falls back
+	}
+
+	req := &workerRequest{
+		ID:                      fmt.Sprintf("cmd-%d", time.Now().UnixNano()),
+		Cmd:                     name,
+		Args:                    args,
+		Dir:                     dir,
+		Env:                     env,
+		WritableRoots:           cfg.WritableRoots,
+		DenyWrite:               cfg.DenyWrite,
+		DenyRead:                cfg.DenyRead,
+		NeedsNetworkRestriction: cfg.NeedsNetworkRestriction,
+		ResourceLimits:          cfg.ResourceLimits,
+	}
+
+	resp, err := w.execCommand(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return &platform.WorkerExecResult{
+		Stdout:   resp.Stdout,
+		Stderr:   resp.Stderr,
+		ExitCode: resp.ExitCode,
+		Error:    resp.Error,
+	}, nil
+}
+
