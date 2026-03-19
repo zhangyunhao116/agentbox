@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 
 	"github.com/zhangyunhao116/agentbox/platform"
@@ -50,7 +51,10 @@ func encodeRequest(conn net.Conn, req *workerRequest) error {
 	}
 
 	// Write 4-byte big-endian length prefix.
-	length := uint32(len(data))
+	if len(data) > math.MaxUint32 {
+		return fmt.Errorf("payload too large: %d bytes", len(data))
+	}
+	length := uint32(len(data)) //nolint:gosec // overflow checked above
 	if err := binary.Write(conn, binary.BigEndian, length); err != nil {
 		return fmt.Errorf("write length: %w", err)
 	}
@@ -102,7 +106,10 @@ func encodeResponse(conn net.Conn, resp *workerResponse) error {
 	}
 
 	// Write 4-byte big-endian length prefix.
-	length := uint32(len(data))
+	if len(data) > math.MaxUint32 {
+		return fmt.Errorf("payload too large: %d bytes", len(data))
+	}
+	length := uint32(len(data)) //nolint:gosec // overflow checked above
 	if err := binary.Write(conn, binary.BigEndian, length); err != nil {
 		return fmt.Errorf("write length: %w", err)
 	}

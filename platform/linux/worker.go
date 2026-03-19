@@ -5,6 +5,7 @@ package linux
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -97,14 +98,15 @@ func startWorker(baseCfg reExecConfig) (*workerClient, error) {
 	// If the process exits before connecting, we detect it immediately
 	// rather than waiting the full 5s timeout.
 	go func() {
-		state, waitErr := proc.Wait()
-		if waitErr != nil {
-			procDoneCh <- fmt.Errorf("worker wait: %w", waitErr)
-		} else if !state.Success() {
-			procDoneCh <- fmt.Errorf("worker exited with status %d", state.ExitCode())
-		} else {
-			procDoneCh <- fmt.Errorf("worker exited unexpectedly with success")
-		}
+	state, waitErr := proc.Wait()
+	switch {
+	case waitErr != nil:
+		procDoneCh <- fmt.Errorf("worker wait: %w", waitErr)
+	case !state.Success():
+		procDoneCh <- fmt.Errorf("worker exited with status %d", state.ExitCode())
+	default:
+		procDoneCh <- errors.New("worker exited unexpectedly with success")
+	}
 	}()
 
 	var conn net.Conn
@@ -122,7 +124,7 @@ func startWorker(baseCfg reExecConfig) (*workerClient, error) {
 	case <-time.After(5 * time.Second):
 		_ = proc.Kill()
 		_ = os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("worker connection timeout (5s)")
+		return nil, errors.New("worker connection timeout (5s)")
 	}
 
 	// Re-use procDoneCh for post-connection lifecycle monitoring.
@@ -191,7 +193,7 @@ func (w *workerClient) execCommand(ctx context.Context, req *workerRequest) (*wo
 
 	// Check if worker is still alive.
 	if !w.aliveUnlocked() {
-		return nil, fmt.Errorf("worker process has exited")
+		return nil, errors.New("worker process has exited")
 	}
 
 	// Set deadline from context.

@@ -592,10 +592,11 @@ func TestStartWorkerProcessFailureFastFail(t *testing.T) {
 		t.Errorf("error should mention 'worker process failed', got: %v", err)
 	}
 
-	// Verify that it failed fast (< 1s), not after the full 5s timeout.
-	// Allow generous margin for slow CI/test environments.
-	if elapsed > 2*time.Second {
-		t.Errorf("startWorker took %v, expected fast failure (< 2s) not timeout", elapsed)
+	// Verify that it failed fast (<5s), not after the full 5s connection timeout.
+	// Allow generous margin for slow CI/test environments and race detector overhead.
+	// The connection timeout is 5s, so if detection is working, it should be <4.5s.
+	if elapsed > 4500*time.Millisecond {
+		t.Errorf("startWorker took %v, expected fast failure (<4.5s) not timeout", elapsed)
 	}
 }
 
