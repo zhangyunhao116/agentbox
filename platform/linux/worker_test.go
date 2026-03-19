@@ -561,6 +561,44 @@ func TestWorkerRequestDeadline(t *testing.T) {
 	}
 }
 
+// TestStartWorkerProcessFailureFastFail verifies that startWorker returns
+// immediately when the worker process exits with a failure before connecting,
+// rather than waiting the full 5s timeout.
+func TestStartWorkerProcessFailureFastFail(t *testing.T) {
+	// Save original function and restore after test.
+	origHarden := workerHardenFn
+	defer func() { workerHardenFn = origHarden }()
+
+	// Mock hardenProcess to fail immediately, simulating Landlock failure.
+	workerHardenFn = func() error {
+		return errors.New("simulated Landlock not supported")
+	}
+
+	baseCfg := reExecConfig{
+		WritableRoots: []string{"/tmp"},
+	}
+
+	start := time.Now()
+	_, err := startWorker(baseCfg)
+	elapsed := time.Since(start)
+
+	// Verify that an error was returned.
+	if err == nil {
+		t.Fatal("startWorker should return error when worker process fails")
+	}
+
+	// Verify the error message indicates process failure.
+	if !strings.Contains(err.Error(), "worker process failed") {
+		t.Errorf("error should mention 'worker process failed', got: %v", err)
+	}
+
+	// Verify that it failed fast (< 1s), not after the full 5s timeout.
+	// Allow generous margin for slow CI/test environments.
+	if elapsed > 2*time.Second {
+		t.Errorf("startWorker took %v, expected fast failure (< 2s) not timeout", elapsed)
+	}
+}
+
 // stringSliceEqual compares two string slices for equality.
 func stringSliceEqual(a, b []string) bool {
 	if len(a) != len(b) {

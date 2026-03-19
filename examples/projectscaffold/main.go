@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/zhangyunhao116/agentbox"
 )
@@ -50,22 +51,25 @@ func run() error {
 	fmt.Println("=== Part 1: Scaffold Project Files ===")
 	fmt.Println()
 
-	// 1a. Create directory structure.
-	mkdirCmd := fmt.Sprintf("mkdir -p %s/cmd/server %s/internal/handler %s/docs",
-		workspace, workspace, workspace)
-	result, err := mgr.Exec(ctx, mkdirCmd)
-	if err != nil {
-		return fmt.Errorf("mkdir: %w", err)
+	// 1a. Create directory structure using native Go.
+	dirs := []string{
+		filepath.Join(workspace, "cmd", "server"),
+		filepath.Join(workspace, "internal", "handler"),
+		filepath.Join(workspace, "docs"),
 	}
-	fmt.Printf("  mkdir -p (dirs):       exit=%d\n", result.ExitCode)
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dir, err)
+		}
+	}
+	fmt.Printf("  mkdir -p (dirs):       exit=0\n")
 
-	// 1b. Write go.mod.
-	goModCmd := fmt.Sprintf("cat > %s/go.mod << 'GOMOD'\nmodule example.com/myservice\n\ngo 1.21\nGOMOD", workspace)
-	result, err = mgr.Exec(ctx, goModCmd)
-	if err != nil {
+	// 1b. Write go.mod using native Go.
+	goModContent := "module example.com/myservice\n\ngo 1.21\n"
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte(goModContent), 0o644); err != nil {
 		return fmt.Errorf("write go.mod: %w", err)
 	}
-	fmt.Printf("  write go.mod:          exit=%d\n", result.ExitCode)
+	fmt.Printf("  write go.mod:          exit=0\n")
 
 	// 1c. Write cmd/server/main.go — a simple HTTP server skeleton.
 	serverMain := `package main
@@ -82,12 +86,10 @@ func main() {
 	fmt.Println("listening on :8080")
 	http.ListenAndServe(":8080", nil)
 }`
-	serverCmd := fmt.Sprintf("cat > %s/cmd/server/main.go << 'GOEOF'\n%s\nGOEOF", workspace, serverMain)
-	result, err = mgr.Exec(ctx, serverCmd)
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(workspace, "cmd", "server", "main.go"), []byte(serverMain), 0o644); err != nil {
 		return fmt.Errorf("write cmd/server/main.go: %w", err)
 	}
-	fmt.Printf("  write server/main.go:  exit=%d\n", result.ExitCode)
+	fmt.Printf("  write server/main.go:  exit=0\n")
 
 	// 1d. Write internal/handler/handler.go.
 	handlerSrc := `package handler
@@ -101,24 +103,26 @@ import (
 func Health(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "ok")
 }`
-	handlerCmd := fmt.Sprintf("cat > %s/internal/handler/handler.go << 'GOEOF'\n%s\nGOEOF", workspace, handlerSrc)
-	result, err = mgr.Exec(ctx, handlerCmd)
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(workspace, "internal", "handler", "handler.go"), []byte(handlerSrc), 0o644); err != nil {
 		return fmt.Errorf("write handler.go: %w", err)
 	}
-	fmt.Printf("  write handler.go:      exit=%d\n", result.ExitCode)
+	fmt.Printf("  write handler.go:      exit=0\n")
 
 	// 1e. Write README.md.
-	readmeCmd := fmt.Sprintf("cat > %s/README.md << 'EOF'\n# myservice\n\nA simple HTTP service scaffolded by an AI agent.\n\n## Quick Start\n\n```bash\ngo run ./cmd/server\n```\nEOF", workspace)
-	result, err = mgr.Exec(ctx, readmeCmd)
-	if err != nil {
+	readmeContent := `# myservice
+
+A simple HTTP service scaffolded by an AI agent.
+
+## Quick Start
+
+` + "```bash\ngo run ./cmd/server\n```\n"
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte(readmeContent), 0o644); err != nil {
 		return fmt.Errorf("write README.md: %w", err)
 	}
-	fmt.Printf("  write README.md:       exit=%d\n", result.ExitCode)
+	fmt.Printf("  write README.md:       exit=0\n")
 
-	// 1f. Verify all files exist.
-	findCmd := fmt.Sprintf("find %s -type f | sort", workspace)
-	result, err = mgr.Exec(ctx, findCmd)
+	// 1f. Verify all files exist using ExecArgs.
+	result, err := mgr.ExecArgs(ctx, "sh", []string{"-c", "find " + workspace + " -type f | sort"})
 	if err != nil {
 		return fmt.Errorf("find files: %w", err)
 	}
@@ -134,7 +138,7 @@ func Health(w http.ResponseWriter, r *http.Request) {
 	// writes may succeed.
 
 	// 2a. Try writing to /etc — should be denied.
-	result, err = mgr.Exec(ctx, "touch /etc/myservice.conf 2>&1")
+	result, err = mgr.ExecArgs(ctx, "sh", []string{"-c", "touch /etc/myservice.conf 2>&1"})
 	if err != nil {
 		return fmt.Errorf("touch /etc: %w", err)
 	}
@@ -142,7 +146,7 @@ func Health(w http.ResponseWriter, r *http.Request) {
 		result.ExitCode, result.ExitCode != 0)
 
 	// 2b. Try creating a directory in /opt — should be denied.
-	result, err = mgr.Exec(ctx, "mkdir /opt/myservice 2>&1")
+	result, err = mgr.ExecArgs(ctx, "sh", []string{"-c", "mkdir /opt/myservice 2>&1"})
 	if err != nil {
 		return fmt.Errorf("mkdir /opt: %w", err)
 	}
@@ -157,16 +161,14 @@ func Health(w http.ResponseWriter, r *http.Request) {
 	fmt.Println()
 
 	// 3a. Read go.mod content.
-	catCmd := fmt.Sprintf("cat %s/go.mod", workspace)
-	result, err = mgr.Exec(ctx, catCmd)
+	result, err = mgr.ExecArgs(ctx, "cat", []string{filepath.Join(workspace, "go.mod")})
 	if err != nil {
 		return fmt.Errorf("cat go.mod: %w", err)
 	}
 	fmt.Printf("  go.mod content:\n%s\n", result.Stdout)
 
 	// 3b. Count lines in cmd/server/main.go.
-	wcCmd := fmt.Sprintf("wc -l %s/cmd/server/main.go", workspace)
-	result, err = mgr.Exec(ctx, wcCmd)
+	result, err = mgr.ExecArgs(ctx, "wc", []string{"-l", filepath.Join(workspace, "cmd", "server", "main.go")})
 	if err != nil {
 		return fmt.Errorf("wc -l main.go: %w", err)
 	}

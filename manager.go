@@ -563,7 +563,7 @@ func (m *manager) runCommand(ctx context.Context, cmd *exec.Cmd, co *callOptions
 // Returns nil if the worker is unavailable or encounters an error (caller should fall back).
 func (m *manager) tryWorkerExec(ctx context.Context, we platform.WorkerExecutor, cmd *exec.Cmd, wcfg *platform.WrapConfig, maxOutput int) *ExecResult {
 	start := time.Now()
-	result, err := we.ExecViaWorker(ctx, wcfg, cmd.Path, cmd.Args, cmd.Dir, cmd.Environ())
+	result, err := we.ExecViaWorker(ctx, wcfg, cmd.Path, cmd.Args, cmd.Dir, cmd.Environ(), maxOutput)
 	if err != nil || result == nil {
 		// Worker error or unavailable — caller will fall back to standard path.
 		return nil

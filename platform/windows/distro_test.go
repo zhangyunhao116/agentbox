@@ -25,7 +25,7 @@ func TestWslConfContent(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if !strings.Contains(wslConfContent, tt.required) {
+			if !strings.Contains(wslConfContent(), tt.required) {
 				t.Errorf("wsl.conf must contain %q", tt.required)
 			}
 		})
@@ -54,7 +54,7 @@ func TestWslConfSections(t *testing.T) {
 	// Verify all required INI sections are present.
 	sections := []string{"[interop]", "[automount]", "[user]", "[network]", "[boot]"}
 	for _, s := range sections {
-		if !strings.Contains(wslConfContent, s) {
+		if !strings.Contains(wslConfContent(), s) {
 			t.Errorf("wsl.conf must contain section %q", s)
 		}
 	}
@@ -226,7 +226,7 @@ func TestPrependNATProxyExports(t *testing.T) {
 
 func TestWslConfHostnameMatchesDistroName(t *testing.T) {
 	expected := "hostname=" + defaultDistroName
-	if !strings.Contains(wslConfContent, expected) {
+	if !strings.Contains(wslConfContent(), expected) {
 		t.Errorf("wslConfContent hostname does not match defaultDistroName %q; want %q in content",
 			defaultDistroName, expected)
 	}

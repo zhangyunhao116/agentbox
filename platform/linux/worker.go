@@ -82,6 +82,7 @@ func startWorker(baseCfg reExecConfig) (*workerClient, error) {
 	// Wait for the worker to connect (with 5 second timeout).
 	connCh := make(chan net.Conn, 1)
 	errCh := make(chan error, 1)
+	procDoneCh := make(chan error, 1)
 
 	go func() {
 		conn, acceptErr := listener.Accept()
@@ -92,6 +93,20 @@ func startWorker(baseCfg reExecConfig) (*workerClient, error) {
 		connCh <- conn
 	}()
 
+	// Monitor worker process death (before and after connection).
+	// If the process exits before connecting, we detect it immediately
+	// rather than waiting the full 5s timeout.
+	go func() {
+		state, waitErr := proc.Wait()
+		if waitErr != nil {
+			procDoneCh <- fmt.Errorf("worker wait: %w", waitErr)
+		} else if !state.Success() {
+			procDoneCh <- fmt.Errorf("worker exited with status %d", state.ExitCode())
+		} else {
+			procDoneCh <- fmt.Errorf("worker exited unexpectedly with success")
+		}
+	}()
+
 	var conn net.Conn
 	select {
 	case conn = <-connCh:
@@ -100,17 +115,20 @@ func startWorker(baseCfg reExecConfig) (*workerClient, error) {
 		_ = proc.Kill()
 		_ = os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("accept worker connection: %w", err)
+	case procErr := <-procDoneCh:
+		// Worker process exited before connecting (e.g., Landlock failure).
+		_ = os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("worker process failed: %w", procErr)
 	case <-time.After(5 * time.Second):
 		_ = proc.Kill()
 		_ = os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("worker connection timeout (5s)")
 	}
 
+	// Re-use procDoneCh for post-connection lifecycle monitoring.
 	done := make(chan struct{})
-
-	// Monitor worker process in background.
 	go func() {
-		_, _ = proc.Wait()
+		<-procDoneCh // Wait for the proc.Wait() goroutine above to complete.
 		close(done)
 	}()
 

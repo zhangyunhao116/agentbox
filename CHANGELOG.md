@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **testutil**: New test utility package providing cross-platform helpers for Windows test compatibility — `Shell()`, `ShellArgs()`, `EchoCommand()`, `ExitCommand()`, `PrintEnvCommand()`, `PwdCommand()`, `StderrCommand()`, `SleepCommand()`, `TempDir()`, `TempPath()`, `HomeDir()`, `SkipIfWindows()`, `SkipIfNotWindows()`, `RequireUnix()`.
 
 - **platform/linux**: Persistent sandbox worker (Zygote mode) — maintains a pre-sandboxed worker process that handles commands via Unix socket IPC, eliminating per-command Go runtime restart. Reduces Linux sandbox overhead from ~140ms to ~20µs protocol round-trip. Falls back to re-exec when worker is unavailable. Note: worker mode uses the broadest Landlock config from Manager initialization; per-command Landlock tightening is planned for a future release.
+- **platform/linux**: Worker fast-fail detection — when the worker process exits before connecting (e.g., Landlock not supported on kernel < 5.13), `startWorker` returns error immediately instead of waiting the full 5-second timeout. Reduces cold-start fallback time from ~5.1s to ~125ms on older kernels.
+- **cmd/sandbox-bench**: New benchmark CLI tool (`sandbox-bench <cmd>`) for performance testing. Supports `--batch N` flag for hot-path measurement with timing statistics (min/max/mean/P50/P95).
 - **platform**: New `WorkerExecutor` optional interface for platforms to provide fast command execution via persistent workers.
 
 ### Changed
@@ -41,9 +43,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **platform/windows**: `SetHelperBinary()` API for providing pre-built sandbox-helper binary path.
 - **platform/windows**: Automatic path translation for WritableRoots, DenyWrite, DenyRead in Full Mode (Windows → WSL).
 
+### Performance
+
+- **internal/pathutil**: Optimize `ExpandGlob` for non-recursive patterns — use `filepath.Glob` fast path instead of `filepath.Walk` for patterns without `**`. Eliminates recursive `/proc` traversal on busy Linux servers (1180ms → 30ms on 335-process system, 39× speedup).
+
+### Fixed
+
+- **nop**: `nopManager.Available()` now correctly returns `false` — the fallback manager runs commands without sandboxing, so it should not report as available.
+- **examples/gitops**: Refactored from `fmt.Sprintf` shell command construction to `ExecArgs()` with proper argument arrays, eliminating command injection risk.
+- **examples/projectscaffold**: Refactored from `fmt.Sprintf` shell commands to native Go file I/O + `ExecArgs()`, eliminating command injection risk.
+- **platform/linux**: Wire `MaxOutputBytes` through worker protocol — worker now truncates stdout/stderr before encoding rather than relying solely on post-hoc truncation in manager.
+- **platform/windows/distro**: Replace hardcoded `"agentbox-sb"` hostname in `wslConfContent` with `defaultDistroName` constant via function interpolation.
+
 ### Changed
 
 - **platform/windows/distro**: Remove `ro` from WSL automount options — Simple Mode (WSL1) relies on unprivileged sandbox user for write control instead of read-only mount, allowing WritableRoots to work for examples like `codemod` and `projectinit`.
+- **platform/windows/wsl**: Add package-level documentation describing the two-tier WSL2 isolation architecture.
+- **all**: Modernize octal permission literals in test files from `0755`/`0644` to `0o755`/`0o644` (Go 1.13+ notation).
 
 ### Security
 

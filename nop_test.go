@@ -101,8 +101,8 @@ func TestNopManagerExecArgsNonZeroExit(t *testing.T) {
 
 func TestNopManagerAvailable(t *testing.T) {
 	mgr := NewNopManager()
-	if !mgr.Available() {
-		t.Error("Available() should return true")
+	if mgr.Available() {
+		t.Error("Available() should return false (nop manager is not a real sandbox)")
 	}
 }
 

@@ -180,11 +180,12 @@ type WorkerExecutor interface {
 	//   args: command arguments including argv[0]
 	//   dir: working directory for the command
 	//   env: environment variables (full set, not just overrides)
+	//   maxOutputBytes: maximum output size (0 = unlimited)
 	//
 	// Returns:
 	//   result: execution result with stdout/stderr/exit code
 	//   error: worker communication error (nil if worker handled it)
-	ExecViaWorker(ctx context.Context, cfg *WrapConfig, name string, args []string, dir string, env []string) (*WorkerExecResult, error)
+	ExecViaWorker(ctx context.Context, cfg *WrapConfig, name string, args []string, dir string, env []string, maxOutputBytes int) (*WorkerExecResult, error)
 }
 
 // Detect returns the appropriate Platform for the current OS.

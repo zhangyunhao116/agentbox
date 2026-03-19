@@ -1,5 +1,8 @@
 //go:build windows
 
+// Package windows implements sandboxed command execution via WSL2 (Windows Subsystem for Linux).
+// It provides two isolation tiers: Simple Mode (WSL boundary only) and Full Mode
+// (Linux namespaces + Landlock + seccomp inside WSL2).
 package windows
 
 import (

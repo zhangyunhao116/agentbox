@@ -28,6 +28,7 @@ type workerRequest struct {
 	DenyRead                []string                 `json:"deny_read,omitempty"`
 	NeedsNetworkRestriction bool                     `json:"needs_network_restriction,omitempty"`
 	ResourceLimits          *platform.ResourceLimits `json:"resource_limits,omitempty"`
+	MaxOutputBytes          int                      `json:"max_output_bytes,omitempty"` // max stdout/stderr size
 }
 
 // workerResponse is returned from the Worker to the Manager.

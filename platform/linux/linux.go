@@ -150,7 +150,7 @@ func (l *Platform) ensureWorkerUnlocked(cfg *platform.WrapConfig) *workerClient 
 
 // ExecViaWorker executes a command via the persistent worker process.
 // Returns nil, nil if worker is not available (caller should fall back to re-exec).
-func (l *Platform) ExecViaWorker(ctx context.Context, cfg *platform.WrapConfig, name string, args []string, dir string, env []string) (*platform.WorkerExecResult, error) {
+func (l *Platform) ExecViaWorker(ctx context.Context, cfg *platform.WrapConfig, name string, args []string, dir string, env []string, maxOutputBytes int) (*platform.WorkerExecResult, error) {
 	l.mu.Lock()
 	w := l.ensureWorkerUnlocked(cfg)
 	l.mu.Unlock()
@@ -170,6 +170,7 @@ func (l *Platform) ExecViaWorker(ctx context.Context, cfg *platform.WrapConfig, 
 		DenyRead:                cfg.DenyRead,
 		NeedsNetworkRestriction: cfg.NeedsNetworkRestriction,
 		ResourceLimits:          cfg.ResourceLimits,
+		MaxOutputBytes:          maxOutputBytes,
 	}
 
 	resp, err := w.execCommand(ctx, req)

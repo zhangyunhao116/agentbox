@@ -180,6 +180,16 @@ func executeCommand(req *workerRequest, baseCfg *reExecConfig) *workerResponse {
 		Stderr: stderr.Bytes(),
 	}
 
+	// Truncate output if MaxOutputBytes is set and exceeded.
+	if req.MaxOutputBytes > 0 {
+		if len(resp.Stdout) > req.MaxOutputBytes {
+			resp.Stdout = resp.Stdout[:req.MaxOutputBytes]
+		}
+		if len(resp.Stderr) > req.MaxOutputBytes {
+			resp.Stderr = resp.Stderr[:req.MaxOutputBytes]
+		}
+	}
+
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
