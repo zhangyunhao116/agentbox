@@ -19,12 +19,17 @@ const processGroupWaitDelay = 3 * time.Second
 //
 // Note: For full process tree cleanup, Job Objects should be used
 // (requires golang.org/x/sys/windows). The current implementation uses
-// CREATE_NEW_PROCESS_GROUP which handles the common case of wsl.exe
-// and its direct children.
+// CREATE_NEW_PROCESS_GROUP which handles the common case of sandboxed
+// native Windows processes and their direct children.
+//
+// If cmd.SysProcAttr is already set (e.g., by platform WrapCommand for
+// sandbox Token or Job Object setup), this function merges the
+// CREATE_NEW_PROCESS_GROUP flag instead of overwriting.
 func setupProcessGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
+	cmd.SysProcAttr.CreationFlags |= syscall.CREATE_NEW_PROCESS_GROUP
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return os.ErrProcessDone

@@ -8,7 +8,7 @@ import (
 )
 
 func TestResearchFlow(t *testing.T) {
-	testutil.SkipIfWindows(t, "example requires sandbox platform (WSL2) not available on CI runners")
+	testutil.SkipIfWindows(t, "example requires sandbox platform not available on CI runners")
 	if agentbox.MaybeSandboxInit() {
 		return
 	}

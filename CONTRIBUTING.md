@@ -9,7 +9,7 @@ guidelines and instructions for contributing.
 
 - Go 1.24 or later
 - [golangci-lint](https://golangci-lint.run/) v2 (for linting)
-- macOS or Linux (for running sandbox tests)
+- macOS, Linux, or Windows (for running sandbox tests)
 
 ### Getting Started
 
@@ -85,7 +85,7 @@ This is a security library. Extra care is required:
 2. Make your changes with tests.
 3. Run `make check` to verify everything passes.
 4. Submit a pull request with a clear description of the change.
-5. Ensure CI passes on both macOS and Linux.
+5. Ensure CI passes on macOS, Linux, and Windows.
 
 ## Reporting Issues
 

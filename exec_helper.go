@@ -6,6 +6,8 @@ import (
 	"io"
 	"os/exec"
 	"time"
+
+	"github.com/zhangyunhao116/agentbox/platform"
 )
 
 // execHelper captures command output with size limits and returns an ExecResult.
@@ -30,7 +32,26 @@ func execHelper(cmd *exec.Cmd, maxOutput int, sandboxed bool) (*ExecResult, erro
 	setupProcessGroup(cmd)
 
 	start := time.Now()
-	err := cmd.Run()
+	err := cmd.Start()
+	if err != nil {
+		// Discard any registered post-start hook to avoid resource leak
+		_ = platform.PopPostStartHook(cmd)
+		return nil, err
+	}
+
+	// Execute post-start hook if registered (e.g., for Windows Job Object assignment).
+	// The hook is registered by platform WrapCommand and must be called after Start()
+	// but before Wait() to assign suspended processes to Job Objects and resume them.
+	if hook := platform.PopPostStartHook(cmd); hook != nil {
+		if hookErr := hook(cmd); hookErr != nil {
+			// Kill the process (which may be suspended) since we can't set up the sandbox.
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait() // reap the process
+			return nil, hookErr
+		}
+	}
+
+	err = cmd.Wait()
 	duration := time.Since(start)
 
 	exitCode := 0

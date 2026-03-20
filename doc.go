@@ -2,7 +2,8 @@
 //
 // It enables secure command execution by wrapping processes with
 // platform-specific sandboxing mechanisms (macOS Seatbelt/SBPL,
-// Linux Namespaces + Landlock) while providing a unified API.
+// Linux Namespaces + Landlock, Windows Restricted Token + Job Object +
+// Low Integrity Level) while providing a unified API.
 //
 // Key features:
 //   - Filesystem isolation with configurable writable roots

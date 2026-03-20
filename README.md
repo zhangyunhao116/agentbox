@@ -1,6 +1,6 @@
 # agentbox
 
-Process-level sandbox isolation library for AI agents and CI/CD systems. Zero external runtime dependencies, no CGo, cross-platform (macOS, Linux, Windows via WSL2).
+Process-level sandbox isolation library for AI agents and CI/CD systems. Zero external runtime dependencies, no CGo, cross-platform (macOS, Linux, Windows).
 
 > **⚠️ Beta Notice**
 >
@@ -10,10 +10,10 @@ Process-level sandbox isolation library for AI agents and CI/CD systems. Zero ex
 > |-----------|--------|
 > | **macOS (Seatbelt)** | ✅ Tested and stable |
 > | **Linux (Namespace + Landlock)** | ✅ Tested (beta) |
-> | **Windows (WSL2)** | ✅ Tested (beta) — see [design/06-windows-wsl-sandbox.md](./design/06-windows-wsl-sandbox.md) |
+> | **Windows (Native Sandbox)** | ✅ Tested (beta) — uses Restricted Token + Job Object + ACLs |
 > | **Go API** | ⚠️ Beta — expect breaking changes before v1.0 |
 >
-> **Windows Support:** Windows support uses WSL2 (Windows Subsystem for Linux 2), providing two isolation tiers: Simple Mode (Hyper-V VM boundary) and Full Mode (Linux namespace sandbox inside WSL2). Requires Windows 10 Build 19041+ with WSL2 ≥ v2.5.10. See the [design document](./design/06-windows-wsl-sandbox.md) for details.
+> **Windows Support:** Windows support uses native Windows security mechanisms (Restricted Token, Job Object, Low Integrity Level) for process isolation. No WSL or virtual machine required. Supports Windows 10 Build 19041+ / Windows Server 2019+.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/zhangyunhao116/agentbox.svg)](https://pkg.go.dev/github.com/zhangyunhao116/agentbox)
 
@@ -201,16 +201,16 @@ Sandboxed processes are constrained by configurable resource limits:
 
 Platform-specific hardening is applied automatically:
 
-| Technique | macOS | Linux | Windows (WSL2) |
-|-----------|-------|-------|----------------|
-| Filesystem isolation | Seatbelt/SBPL profiles | User/Mount namespaces + Landlock | Hyper-V VM + Landlock (inside WSL2) |
-| Network isolation | SBPL rules + Proxy | `CLONE_NEWNET` + Proxy | `CLONE_NEWNET` + Proxy (inside WSL2) |
-| PID isolation | — | `CLONE_NEWPID` namespace | `CLONE_NEWPID` (inside WSL2) |
-| Syscall filtering | — | Seccomp BPF | Seccomp BPF (inside WSL2) |
-| Privilege escalation prevention | `PT_DENY_ATTACH` | `PR_SET_NO_NEW_PRIVS` | `PR_SET_NO_NEW_PRIVS` (inside WSL2) |
-| Environment sanitization | `DYLD_*` variable removal | — | Windows env sanitization + WSL config |
+| Technique | macOS | Linux | Windows (Native) |
+|-----------|-------|-------|------------------|
+| Filesystem isolation | Seatbelt/SBPL profiles | User/Mount namespaces + Landlock | Restricted Token + ACLs |
+| Network isolation | SBPL rules + Proxy | `CLONE_NEWNET` + Proxy | Windows Firewall (Tier 2) + Proxy |
+| PID isolation | — | `CLONE_NEWPID` namespace | — |
+| Syscall filtering | — | Seccomp BPF | — |
+| Privilege escalation prevention | `PT_DENY_ATTACH` | `PR_SET_NO_NEW_PRIVS` | Restricted Token + Low Integrity Level |
+| Environment sanitization | `DYLD_*` variable removal | — | Windows env sanitization |
 | Core dump prevention | Yes | Yes | Yes |
-| VM isolation | — | — | Hyper-V (WSL2) |
+| Resource limits | — | rlimits | Job Object |
 
 ### Fallback Behavior
 
@@ -398,9 +398,9 @@ Comparison of first-run overhead with no warmup (hyperfine `--warmup 0`):
 
 | Platform | agentbox | codex¹ | srt² | bare |
 |----------|----------|--------|------|------|
-| macOS (Apple M3 Pro) | **16 ms** | 26 ms | 158 ms | 1.3 ms |
-| Linux (Xeon Gold 6133) | **30 ms** | 77 ms | 517 ms | 0.9 ms |
-| Windows (Xeon Platinum, WSL) | 640 ms | **186 ms** | N/A³ | 43 ms |
+| macOS (Apple M3 Pro) | **13 ms** | 26 ms | 158 ms | 1.3 ms |
+| Linux (AMD EPYC 9754) | **21 ms** | 77 ms | 517 ms | 0.9 ms |
+| Windows (Xeon Platinum, native) | **17 ms** ⁴ | 186 ms | N/A³ | 12 ms |
 
 ### Hot-start latency
 
@@ -408,9 +408,9 @@ Sustained per-call overhead after warmup (hyperfine `--warmup 10`):
 
 | Platform | agentbox | codex | srt |
 |----------|----------|-------|-----|
-| macOS | **16 ms** | 25 ms | 154 ms |
-| Linux | **30 ms** | 77 ms | 497 ms |
-| Windows | 631 ms | **187 ms** | N/A |
+| macOS | **13 ms** | 25 ms | 154 ms |
+| Linux | **21 ms** | 77 ms | 497 ms |
+| Windows | **17 ms** ⁴ | 187 ms | N/A |
 
 ### Sustained throughput
 
@@ -418,17 +418,28 @@ Batch execution of 100 `echo hello` calls using agentbox `ExecArgs`:
 
 | Platform | Mean | P50 | P95 |
 |----------|------|-----|-----|
-| macOS | 12.5 ms | 12.1 ms | 13.9 ms |
-| Linux | 21.3 ms | 21.0 ms | 23.1 ms |
-| Windows | 156 ms | 154 ms | 167 ms |
+| macOS | 12.5 ms | 11.9 ms | 16.7 ms |
+| Linux | 20.9 ms | 20.0 ms | 30.9 ms |
+| Windows | 16.9 ms ⁴ | 16.2 ms | 18.0 ms |
+
+### Cross-platform sandbox overhead
+
+Per-call latency with full sandbox isolation enabled (20 runs, `echo hello`):
+
+| Platform | Min | P50 | P95 | Mean | Sandbox mechanism |
+|----------|-----|-----|-----|------|-------------------|
+| macOS (M1, arm64) | 10.68 ms | 11.29 ms | 12.17 ms | 11.40 ms | Seatbelt |
+| Linux (DevCloud) | 12.09 ms | 19.98 ms | 29.33 ms | 20.41 ms | NS + Landlock + Seccomp |
+| Windows (Server 2025) | 15.58 ms | 16.23 ms | 18.04 ms | 16.94 ms | Restricted Token + Job Object + Low IL |
 
 **Notes:**
 
 1. **codex** = [OpenAI Codex CLI](https://github.com/openai/codex) 0.80–0.115 (Rust). Uses Seatbelt (macOS), bubblewrap+Landlock (Linux), Restricted Token (Windows).
 2. **srt** = [Claude Code sandbox-runtime](https://github.com/anthropics/sandbox-runtime) 1.0 (Node.js). Uses sandbox-exec (macOS), bubblewrap (Linux).
 3. srt does not support Windows.
+4. Windows native sandbox (Restricted Token + Job Object + Low Integrity Level): echo P50 16.23ms, P95 18.04ms, Mean 16.94ms on Windows Server 2025 (Xeon Platinum 8374C). ACL filesystem isolation is best-effort; token + job + Low IL provide the primary security boundary.
 
-Bare execution (no sandbox) is shown for reference. Test commands: `echo hello` (cold/hot), `go version` (verification). macOS tested on Go 1.26.0, Linux on Go 1.23.9 (TencentOS Server, kernel 6.6.47), Windows on Go 1.24.1 (Server 2025, WSL1). Windows performance is constrained by WSL1 overhead; native Windows sandbox implementation is planned for future releases.
+Bare execution (no sandbox) is shown for reference. Test commands: `echo hello` (cold/hot), `go version` (verification). macOS tested on Go 1.26.0 (Apple M3 Pro, 36GB, macOS 15.5), Linux on Go 1.23.9 (AMD EPYC 9754, 123GB, TencentOS Server 4.2, kernel 5.4.119), Windows on Go 1.24.13 (Xeon Platinum 8374C, 32GB, Windows Server 2025). Windows now uses native sandbox (Restricted Token + Job Object + Low IL).
 
 ## Architecture
 
@@ -447,29 +458,29 @@ agentbox/
 ├── platform/           # Platform-specific sandbox backends
 │   ├── darwin/         # macOS: Seatbelt/SBPL profile generation + enforcement
 │   ├── linux/          # Linux: Namespaces + Landlock + Seccomp BPF
-│   └── windows/        # Windows: WSL2 VM isolation + optional Linux sandbox
+│   └── windows/        # Windows: Native sandbox (Restricted Token + Job Object + ACLs)
 ├── proxy/              # HTTP/SOCKS5 proxy with domain-level filtering
 └── internal/           # Internal utilities
 ```
 
-### Windows WSL2 Sandbox
+### Windows Native Sandbox
 
-On Windows, agentbox isolates commands inside a WSL2 virtual machine running a minimal Alpine Linux distribution.
+On Windows, agentbox uses native Windows security mechanisms for process isolation — no WSL or virtual machine required.
 
-**Simple Mode (Tier 1):** Commands run inside the WSL2 VM with security hardening via `wsl.conf`:
-- `interop.enabled=false` — prevents WSL→Windows escape
-- `automount.options="metadata,ro"` — Windows drives mounted read-only
-- Non-root `sandbox` user
-- `appendWindowsPath=false` — Windows PATH not inherited
+**Tier 1 (non-admin, default):** All features work without elevated privileges:
+- **Restricted Token** — `CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED` strips most privileges
+- **Low Integrity Level** — prevents writes to Medium/High integrity objects
+- **Job Object** — resource limits (memory, CPU time, max processes) and `KILL_ON_JOB_CLOSE` for automatic cleanup
+- **ACL-based filesystem isolation** — per-path allow/deny write rules via `SetNamedSecurityInfoW`
 
-**Full Mode (Tier 2):** Adds Linux namespace sandbox inside WSL2 using the same mechanisms as the native Linux platform (namespaces, Landlock, seccomp). Requires a pre-built helper binary set via `SetHelperBinary()`.
+**Tier 2 (admin, opt-in):** Requires one-time elevated setup for stronger isolation:
+- **Sandbox users** — dedicated local user accounts (`AgentboxSandboxUsers` group) with processes launched via `CreateProcessWithLogonW`
+- **Windows Firewall** — per-user-SID outbound blocking rules via COM (`INetFwPolicy2`)
+- Graceful fallback to Tier 1 if admin setup is not available
 
 **Prerequisites:**
-- Windows 10 Build 19041+ or Windows 11
-- WSL2 ≥ v2.5.10 (enforced for CVE-2025-53788 mitigation)
-- `wsl.exe` available in PATH
-
-The sandbox distro (`agentbox-sb`) is automatically provisioned on first use by downloading the Alpine Linux minirootfs (~3.5 MB).
+- Windows 10 Build 19041+ or Windows 11 / Windows Server 2019+
+- No WSL required
 
 ## Linux Re-exec Helper
 
@@ -486,11 +497,13 @@ func main() {
 
 On macOS and other platforms, `MaybeSandboxInit()` is a no-op that returns `false`.
 
-On Windows, the sandbox helper is a separate Linux binary that runs inside the WSL2 distro. Set it via `SetHelperBinary()` to enable Full Mode.
+On Windows, `MaybeSandboxInit()` is a no-op — the native sandbox uses Windows security APIs directly without a helper binary.
 
 ## Dependencies
 
-agentbox has **zero external runtime dependencies** — the core library uses only the Go standard library. The SOCKS5 proxy implementation is fully internal.
+Build dependencies:
+- `golang.org/x/sys` — Windows system calls for token, job object, and ACL manipulation.
+- `github.com/go-ole/go-ole` — COM interop for Windows Firewall rules (Tier 2 feature, Windows only).
 
 Test dependencies:
 - `golang.org/x/net` — used as a SOCKS5 client in proxy integration tests.
@@ -519,15 +532,22 @@ golangci-lint run ./...
 
 ### Windows Testing
 
-Windows tests require WSL2 to be installed and enabled. Tests that depend on `/bin/sh` or Unix-specific features are automatically skipped on Windows.
+Windows tests run natively without WSL. The sandbox uses native Windows security mechanisms (Restricted Token, Job Object, Low Integrity Level).
 
 ```bash
-# On a Windows machine with Go and WSL2:
+# On a Windows machine with Go:
 go test ./...
 
-# Cross-compile the sandbox helper for WSL2 Full Mode:
-GOOS=linux GOARCH=amd64 go build -o sandbox-helper ./cmd/sandbox-helper
+# Tier 2 features (sandbox users, firewall) require admin:
+# Run elevated PowerShell or use 'gsudo go test ./...'
 ```
+
+## Roadmap
+
+- [x] ~~**Windows CI workflow**: Add GitHub Actions Windows runner to automate sandbox tests on Windows~~ ✅ Added cross-compile checks and verbose sandbox test step
+- [x] ~~**Windows Tier 2 admin testing**: Sandbox user creation + Windows Firewall rules~~ ✅ All admin tests pass on Windows Server 2025 (NetUserAdd/Del, NetLocalGroupAdd/Del, DPAPI, COM INetFwPolicy2)
+- [x] ~~**Windows native SSH testing**: Native OpenSSH on port 9023 alongside Cygwin SSH on port 8022~~ ✅ Proper Windows environment (TEMP, PATH) for sandbox tests
+- [ ] **Full Tier 2 integration**: Launch sandbox processes as the dedicated sandbox user via `CreateProcessWithLogonW` — enables firewall network isolation to take effect
 
 ## License
 

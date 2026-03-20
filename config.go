@@ -188,6 +188,10 @@ type Config struct {
 // DefaultConfig returns a Config with secure defaults suitable for most use cases.
 // If the user's home directory cannot be determined, os.TempDir() is used as a
 // fallback for home-relative deny paths.
+//
+// The default paths are platform-aware:
+// - On Unix (Linux/macOS): protects system directories like /etc, /usr, /bin
+// - On Windows: protects system directories like C:\Windows, C:\Program Files
 func DefaultConfig() *Config {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -197,32 +201,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		Filesystem: FilesystemConfig{
 			WritableRoots: []string{},
-			DenyWrite: []string{
-				home,
-				"/etc",
-				"/usr",
-				"/bin",
-				"/sbin",
-				"/lib",
-				"/lib64",
-				"/boot",
-				"/opt",
-				"/sys",
-			},
-			DenyRead: []string{
-				filepath.Join(home, ".ssh"),
-				filepath.Join(home, ".aws"),
-				filepath.Join(home, ".gnupg"),
-				filepath.Join(home, ".git-credentials"),
-				filepath.Join(home, ".npmrc"),
-				filepath.Join(home, ".netrc"),
-				filepath.Join(home, ".docker"),
-				filepath.Join(home, ".pypirc"),
-				filepath.Join(home, ".kube"),
-				filepath.Join(home, ".config", "gcloud"),
-				"/proc/*/mem",
-				"/sys",
-			},
+			DenyWrite:     defaultDenyWritePaths(home),
+			DenyRead:      defaultDenyReadPaths(home),
 			AllowGitConfig: false,
 		},
 		Network: NetworkConfig{
