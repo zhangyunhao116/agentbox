@@ -155,7 +155,7 @@ func startWorkerProcess(baseCfg reExecConfig, sockPath string) (*os.Process, err
 	defer func() { _ = w.Close() }()
 
 	// Prepare command: re-exec self with worker environment.
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(os.Args[0]) //nolint:gosec // G702: intentional self-re-exec for sandbox worker pattern
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("%s=%s", workerEnvKey, sockPath),
 		fmt.Sprintf("%s=%d", reExecEnvKey, r.Fd()),

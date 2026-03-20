@@ -6,6 +6,10 @@ import (
 )
 
 func TestSandboxBench(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping in short mode: requires real sandbox execution")
+	}
+
 	// Test successful command execution.
 	cmd := exec.Command("go", "run", ".", "echo", "hello")
 	out, err := cmd.CombinedOutput()

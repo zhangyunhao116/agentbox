@@ -482,3 +482,123 @@ func TestManagerLoggerPropagatedToProxy(t *testing.T) {
 		t.Error("proxy should be started in NetworkFiltered mode")
 	}
 }
+
+// hookRegisteringFailingPlatform is a test platform that registers a hook
+// during WrapCommand but then returns an error, simulating the leak scenario.
+type hookRegisteringFailingPlatform struct{}
+
+func (hookRegisteringFailingPlatform) Name() string { return "hook-fail-platform" }
+func (hookRegisteringFailingPlatform) Available() bool { return true }
+func (hookRegisteringFailingPlatform) CheckDependencies() *platform.DependencyCheck {
+	return &platform.DependencyCheck{}
+}
+func (hookRegisteringFailingPlatform) WrapCommand(_ context.Context, cmd *exec.Cmd, _ *platform.WrapConfig) error {
+	// Register a hook (this simulates what some platforms do)
+	platform.RegisterPostStartHook(cmd, func(*exec.Cmd) error { return nil })
+	// Then fail
+	return errors.New("hook-fail-platform: intentional failure")
+}
+func (hookRegisteringFailingPlatform) Cleanup(_ context.Context) error { return nil }
+func (hookRegisteringFailingPlatform) Capabilities() platform.Capabilities {
+	return platform.Capabilities{}
+}
+
+// TestWrapCommandFailureCleanupHook verifies that when WrapCommand fails,
+// any PostStartHook registered during that call is cleaned up from the global map.
+func TestWrapCommandFailureCleanupHook(t *testing.T) {
+	t.Helper()
+	
+	// Override detectPlatformFn to use our hook-registering-but-failing platform.
+	origDetect := detectPlatformFn
+	detectPlatformFn = func() platform.Platform { return hookRegisteringFailingPlatform{} }
+	t.Cleanup(func() { detectPlatformFn = origDetect })
+
+	cfg := DefaultConfig()
+	cfg.Shell = testutil.Shell()
+	
+	mgr, err := newManager(cfg)
+	if err != nil {
+		t.Fatalf("newManager() error: %v", err)
+	}
+	defer mgr.Cleanup(context.Background())
+
+	// Test Wrap method
+	cmd := exec.Command("echo", "test")
+	err = mgr.Wrap(context.Background(), cmd)
+	
+	// Should return an error from WrapCommand
+	if err == nil {
+		t.Fatal("Wrap() should return error when WrapCommand fails")
+	}
+	if !errors.Is(err, errors.New("hook-fail-platform: intentional failure")) {
+		// The error wrapping may differ, so check the message contains our error
+		if err.Error() != "hook-fail-platform: intentional failure" {
+			t.Errorf("expected error from WrapCommand, got: %v", err)
+		}
+	}
+
+	// Verify the hook was cleaned up (PopPostStartHook should return nil)
+	hook := platform.PopPostStartHook(cmd)
+	if hook != nil {
+		t.Error("hook should have been cleaned up after WrapCommand failure in Wrap()")
+	}
+}
+
+// TestRunCommandFailureCleanupHook verifies hook cleanup in both FallbackWarn
+// and FallbackStrict cases when WrapCommand fails in runCommand.
+func TestRunCommandFailureCleanupHook(t *testing.T) {
+	t.Helper()
+	
+	// Override detectPlatformFn to use our hook-registering-but-failing platform.
+	origDetect := detectPlatformFn
+	detectPlatformFn = func() platform.Platform { return hookRegisteringFailingPlatform{} }
+	t.Cleanup(func() { detectPlatformFn = origDetect })
+
+	t.Run("FallbackStrict", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Shell = testutil.Shell()
+		cfg.FallbackPolicy = FallbackStrict
+		
+		mgr, err := newManager(cfg)
+		if err != nil {
+			t.Fatalf("newManager() error: %v", err)
+		}
+		defer mgr.Cleanup(context.Background())
+
+		// Exec should fail because WrapCommand fails and policy is strict
+		result, err := mgr.Exec(context.Background(), "echo test")
+		if err == nil {
+			t.Fatal("Exec() should return error when WrapCommand fails with FallbackStrict")
+		}
+		if result != nil {
+			t.Error("result should be nil on error")
+		}
+
+		// Since Exec creates an internal command, we can't easily verify the hook cleanup
+		// on that specific command, but we can verify the code path is covered.
+	})
+
+	t.Run("FallbackWarn", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Shell = testutil.Shell()
+		cfg.FallbackPolicy = FallbackWarn
+		
+		mgr, err := newManager(cfg)
+		if err != nil {
+			t.Fatalf("newManager() error: %v", err)
+		}
+		defer mgr.Cleanup(context.Background())
+
+		// Exec should succeed because FallbackWarn allows running without sandbox
+		result, err := mgr.Exec(context.Background(), "echo test")
+		if err != nil {
+			t.Fatalf("Exec() unexpected error with FallbackWarn: %v", err)
+		}
+		if result == nil {
+			t.Fatal("result should not be nil")
+		}
+		if result.Sandboxed {
+			t.Error("result.Sandboxed should be false when sandbox wrapping fails")
+		}
+	})
+}

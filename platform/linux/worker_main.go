@@ -103,7 +103,7 @@ func workerMain(sockPath string) int {
 	// 4. Connect to the Unix socket created by the parent Manager.
 	// The Manager creates the listener before starting the worker process,
 	// so we dial and connect to it here.
-	conn, err := net.Dial("unix", sockPath)
+	conn, err := net.Dial("unix", sockPath) //nolint:gosec // G704: intentional unix socket connection for worker IPC
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agentbox: worker connect to %q: %v\n", sockPath, err)
 		return 1

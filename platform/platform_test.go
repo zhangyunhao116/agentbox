@@ -253,8 +253,8 @@ func TestDetectPlatformMatchesOS(t *testing.T) {
 			t.Fatal("on linux: builtin stub Available() should return false")
 		}
 	case "windows":
-		if p.Name() != "windows-wsl2" {
-			t.Fatalf("on windows: got Name() = %q, want windows-wsl2", p.Name())
+		if p.Name() != "windows-native" {
+			t.Fatalf("on windows: got Name() = %q, want windows-native", p.Name())
 		}
 		if p.Available() {
 			t.Fatal("on windows: builtin stub Available() should return false")

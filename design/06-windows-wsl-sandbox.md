@@ -1,3 +1,7 @@
+> **⚠️ LEGACY DOCUMENT — This design document describes the WSL2-based Windows sandbox architecture that was replaced in March 2026 with a native Windows sandbox using Restricted Token + Job Object + Low Integrity Level + ACLs. See `platform/windows/` source code for the current implementation.**
+
+---
+
 # Windows Sandbox: WSL2-Based Isolation
 
 > **Status**: Proposed  

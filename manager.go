@@ -462,7 +462,11 @@ func (m *manager) Wrap(ctx context.Context, cmd *exec.Cmd, opts ...Option) error
 	// Inject proxy environment variables when proxy is active.
 	m.injectProxyEnv(cmd)
 
-	return m.platform.WrapCommand(ctx, cmd, wcfg)
+	if err := m.platform.WrapCommand(ctx, cmd, wcfg); err != nil {
+		_ = platform.PopPostStartHook(cmd) // clean up any hook registered before failure
+		return err
+	}
+	return nil
 }
 
 func (m *manager) Exec(ctx context.Context, command string, opts ...Option) (*ExecResult, error) {
@@ -548,6 +552,7 @@ func (m *manager) runCommand(ctx context.Context, cmd *exec.Cmd, co *callOptions
 	// Wrap with platform sandbox (fail-closed by default).
 	sandboxed := true
 	if err := m.platform.WrapCommand(ctx, cmd, wcfg); err != nil {
+		_ = platform.PopPostStartHook(cmd) // clean up any hook registered before failure
 		if snap.cfg.FallbackPolicy == FallbackWarn {
 			m.logger.Warn("sandbox wrapping failed, running without sandbox", "error", err)
 			sandboxed = false

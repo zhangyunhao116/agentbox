@@ -95,6 +95,7 @@ linters:
     gosec:
       excludes:
         - G104  # unhandled errors (covered by errcheck)
+        - G115  # integer overflow conversion (common false positive for syscall FD uintptr↔int)
         - G304  # file path from variable (expected in sandbox tool)
         - G204  # subprocess with variable (core functionality)
 

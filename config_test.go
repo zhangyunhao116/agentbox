@@ -1244,3 +1244,64 @@ func TestValidateDangerousFileScanDepthZero(t *testing.T) {
 		t.Errorf("Validate() should accept zero DangerousFileScanDepth: %v", err)
 	}
 }
+
+// TestDefaultConfigPlatformPaths verifies that DefaultConfig returns
+// platform-appropriate paths for DenyWrite and DenyRead.
+func TestDefaultConfigPlatformPaths(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg == nil {
+		t.Fatal("DefaultConfig() returned nil")
+	}
+
+	// DenyWrite should never be empty or contain empty strings.
+	if len(cfg.Filesystem.DenyWrite) == 0 {
+		t.Fatal("DenyWrite should not be empty")
+	}
+	for i, path := range cfg.Filesystem.DenyWrite {
+		if path == "" {
+			t.Errorf("DenyWrite[%d] is empty string", i)
+		}
+	}
+
+	// DenyRead should never be empty or contain empty strings.
+	if len(cfg.Filesystem.DenyRead) == 0 {
+		t.Fatal("DenyRead should not be empty")
+	}
+	for i, path := range cfg.Filesystem.DenyRead {
+		if path == "" {
+			t.Errorf("DenyRead[%d] is empty string", i)
+		}
+	}
+
+	// Platform-specific path checks.
+	t.Run("platform_specific", func(t *testing.T) {
+		testDefaultConfigPlatformSpecific(t, cfg)
+	})
+}
+
+// TestDefaultDenyPathHelpers verifies that the helper functions return
+// non-empty slices with valid paths.
+func TestDefaultDenyPathHelpers(t *testing.T) {
+	home := "/home/testuser"
+
+	denyWrite := defaultDenyWritePaths(home)
+	if len(denyWrite) == 0 {
+		t.Fatal("defaultDenyWritePaths returned empty slice")
+	}
+	for i, path := range denyWrite {
+		if path == "" {
+			t.Errorf("defaultDenyWritePaths[%d] is empty string", i)
+		}
+	}
+
+	denyRead := defaultDenyReadPaths(home)
+	if len(denyRead) == 0 {
+		t.Fatal("defaultDenyReadPaths returned empty slice")
+	}
+	for i, path := range denyRead {
+		if path == "" {
+			t.Errorf("defaultDenyReadPaths[%d] is empty string", i)
+		}
+	}
+}
+
