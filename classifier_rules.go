@@ -13,6 +13,10 @@ const (
 	homeBraceEnvVar = "${HOME}"
 	// flagRecursive is the long-form --recursive flag used in rule matching.
 	flagRecursive = "--recursive"
+	// cmdPython is the interpreter name used to exempt safe python pipe targets.
+	cmdPython = "python"
+	// cmdPython3 is the interpreter name used to exempt safe python3 pipe targets.
+	cmdPython3 = "python3"
 )
 
 // rule defines a single classification rule. Each rule has a Name and one or
@@ -443,27 +447,102 @@ func rsDevTCP(command string) (ClassifyResult, bool) {
 }
 
 // rsNC detects nc -e or nc -c (netcat execute) reverse shells.
+// It requires "nc" to appear as a standalone command word (not a substring of
+// "rsync", "func", "scutil --nc", etc.) and that the -e/-c flag appears in the
+// SAME compound-command segment (split by && ; || or top-level pipes) so that
+// "nc -zuv host && ping -c 3 host" does not false-positive on "-c".
 func rsNC(lower string) (ClassifyResult, bool) {
-	if strings.Contains(lower, "nc ") && (strings.Contains(lower, " -e") || strings.Contains(lower, " -c")) {
+	if ncSegmentHasExecFlag(lower, "nc") {
 		return rsResult("reverse shell via nc detected")
 	}
 	return ClassifyResult{}, false
 }
 
 // rsNcat detects ncat -e, ncat -c, or ncat --exec reverse shells.
+// It requires "ncat" to appear as a standalone command word.
 func rsNcat(lower string) (ClassifyResult, bool) {
-	if strings.Contains(lower, "ncat ") && (strings.Contains(lower, " -e") || strings.Contains(lower, " -c") || strings.Contains(lower, " --exec")) {
+	if ncSegmentHasExecFlag(lower, "ncat") {
 		return rsResult("reverse shell via ncat detected")
 	}
 	return ClassifyResult{}, false
 }
 
-// rsPythonSocket detects Python socket-based reverse shells.
-func rsPythonSocket(lower string) (ClassifyResult, bool) {
-	if strings.Contains(lower, "python") && strings.Contains(lower, "import socket") {
-		return rsResult("reverse shell via python socket detected")
+// ncSegmentHasExecFlag splits a command on compound operators (&&, ||, ;, |)
+// and checks whether any segment contains a standalone occurrence of cmd (e.g.
+// "nc" or "ncat") together with an -e, -c, or --exec flag. This prevents
+// flags from unrelated segments (like "ping -c 3") from triggering the rule.
+func ncSegmentHasExecFlag(lower, cmd string) bool {
+	if !hasStandaloneCommand(lower, cmd) {
+		return false
 	}
-	return ClassifyResult{}, false
+	// Quick path: if there are no compound operators, check the whole string.
+	if !strings.ContainsAny(lower, "&;|") {
+		return strings.Contains(lower, " -e") || strings.Contains(lower, " -c") || strings.Contains(lower, " --exec")
+	}
+	for _, seg := range splitCompoundSegments(lower) {
+		if hasStandaloneCommand(seg, cmd) &&
+			(strings.Contains(seg, " -e") || strings.Contains(seg, " -c") || strings.Contains(seg, " --exec")) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitCompoundSegments splits a command string on shell compound operators
+// (&&, ||, ;) and top-level pipes. This is a rough split for checking flag
+// locality and does not need full quote awareness.
+func splitCompoundSegments(s string) []string {
+	var result []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '&':
+			if i+1 < len(s) && s[i+1] == '&' {
+				result = append(result, s[start:i])
+				i++
+				start = i + 1
+			}
+		case '|':
+			if i+1 < len(s) && s[i+1] == '|' {
+				result = append(result, s[start:i])
+				i++
+				start = i + 1
+			} else {
+				result = append(result, s[start:i])
+				start = i + 1
+			}
+		case ';':
+			result = append(result, s[start:i])
+			start = i + 1
+		}
+	}
+	return append(result, s[start:])
+}
+
+// rsPythonSocket detects Python socket-based reverse shells.
+// When the code is inline (python -c "..."), a bare "import socket" is
+// almost always port scanning or HTTP testing — not a reverse shell.
+// We only flag inline code when it also contains shell-exec indicators
+// (dup2, subprocess.call, subprocess.popen, pty.spawn, os.system,
+// /bin/sh, /bin/bash) that are hallmarks of a real reverse shell.
+func rsPythonSocket(lower string) (ClassifyResult, bool) {
+	if !strings.Contains(lower, "python") || !strings.Contains(lower, "import socket") {
+		return ClassifyResult{}, false
+	}
+	// Inline code via -c: require additional reverse-shell indicators.
+	if strings.Contains(lower, "python -c") || strings.Contains(lower, "python3 -c") {
+		if strings.Contains(lower, "dup2") ||
+			strings.Contains(lower, "subprocess.call") ||
+			strings.Contains(lower, "subprocess.popen") ||
+			strings.Contains(lower, "pty.spawn") ||
+			strings.Contains(lower, "os.system") ||
+			strings.Contains(lower, "/bin/sh") ||
+			strings.Contains(lower, "/bin/bash") {
+			return rsResult("reverse shell via python socket detected")
+		}
+		return ClassifyResult{}, false
+	}
+	return rsResult("reverse shell via python socket detected")
 }
 
 // rsPerlSocket detects Perl socket-based reverse shells.
@@ -775,8 +854,8 @@ func curlPipeShellRule() rule {
 			if !strings.Contains(command, "|") {
 				return ClassifyResult{}, false
 			}
-			// Check if the pipe target is a shell.
-			parts := strings.Split(command, "|")
+			// Split on top-level pipes only (ignoring pipes inside $(), backticks, quotes).
+			parts := splitTopLevelPipes(command)
 			for _, part := range parts[1:] {
 				trimmed := strings.TrimSpace(part)
 				fields := strings.Fields(trimmed)
@@ -786,6 +865,10 @@ func curlPipeShellRule() rule {
 				target := baseCommand(fields[0])
 				for _, sh := range shells {
 					if target == sh {
+						// python/python3 with -c or -m is safe (inline code, not stdin eval).
+						if (target == cmdPython || target == cmdPython3) && isPipeTargetSafePython(fields) {
+							continue
+						}
 						return ClassifyResult{
 							Decision: Forbidden,
 							Reason:   "piping remote content to a shell is dangerous",
@@ -810,7 +893,7 @@ func curlPipeShellRule() rule {
 			if !strings.Contains(full, "|") {
 				return ClassifyResult{}, false
 			}
-			parts := strings.Split(full, "|")
+			parts := splitTopLevelPipes(full)
 			for _, part := range parts[1:] {
 				trimmed := strings.TrimSpace(part)
 				fields := strings.Fields(trimmed)
@@ -820,6 +903,9 @@ func curlPipeShellRule() rule {
 				target := baseCommand(fields[0])
 				for _, sh := range shells {
 					if target == sh {
+						if (target == cmdPython || target == cmdPython3) && isPipeTargetSafePython(fields) {
+							continue
+						}
 						return ClassifyResult{
 							Decision: Forbidden,
 							Reason:   "piping remote content to a shell is dangerous",
@@ -875,7 +961,7 @@ func matchBase64PipeShell(command string) (ClassifyResult, bool) {
 	}
 	// Walk pipe segments: find the segment with base64 decode,
 	// then check if any subsequent segment is a shell.
-	parts := strings.Split(command, "|")
+	parts := splitTopLevelPipes(command)
 	decodeSeen := false
 	for _, part := range parts {
 		trimmed := strings.TrimSpace(part)
@@ -1305,6 +1391,141 @@ func systemPackageInstallRule() rule {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// hasStandaloneCommand reports whether cmd appears as a standalone command word
+// inside the lower-cased string s. "Standalone" means preceded by
+// start-of-string, whitespace, pipe '|', semicolon ';', ampersand '&', or '/'
+// and followed by end-of-string or whitespace. This prevents substring matches
+// like "rsync" containing "nc" or "func" containing "nc".
+func hasStandaloneCommand(s, cmd string) bool {
+	for i := 0; i < len(s); {
+		idx := strings.Index(s[i:], cmd)
+		if idx < 0 {
+			return false
+		}
+		pos := i + idx
+		end := pos + len(cmd)
+		// Check left boundary: start-of-string or a non-alphanumeric separator.
+		leftOK := pos == 0 || !isWordChar(s[pos-1])
+		// Check right boundary: end-of-string or a non-alphanumeric char.
+		rightOK := end >= len(s) || !isWordChar(s[end])
+		if leftOK && rightOK {
+			return true
+		}
+		i = pos + 1
+	}
+	return false
+}
+
+// isWordChar reports whether b is an ASCII letter, digit, underscore, or
+// hyphen. Hyphens are included so that flag-like tokens such as "--nc" are
+// treated as a single word and do not produce a false word boundary.
+func isWordChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b == '-'
+}
+
+// splitTopLevelPipes splits a command string on pipe '|' characters that are
+// NOT inside single quotes, double quotes, $(...) subshells, $((...))
+// arithmetic, or backtick groups. This prevents subshell pipes (e.g. inside
+// $(echo|shasum)) from being treated as top-level pipes.
+func splitTopLevelPipes(command string) []string {
+	var (
+		result []string
+		ps     pipeScanner
+		start  int
+	)
+	for i := 0; i < len(command); i++ {
+		advance, isSplit := ps.feed(command, i)
+		if isSplit {
+			// Distinguish pipe '|' from logical OR '||'.
+			if i+1 < len(command) && command[i+1] == '|' {
+				i++ // skip the second '|'; this is '||', not a pipe
+			} else {
+				result = append(result, command[start:i])
+				start = i + 1
+			}
+		}
+		i += advance
+	}
+	return append(result, command[start:])
+}
+
+// pipeScanner tracks quoting and subshell nesting while scanning a command
+// string for top-level pipe characters.
+type pipeScanner struct {
+	depth    int  // $(...) nesting
+	inSingle bool // inside '...'
+	inDouble bool // inside "..."
+	inBtick  bool // inside `...`
+}
+
+// feed processes command[i] and returns (advance, isSplit). advance is the
+// number of extra characters to skip (e.g. 1 for escapes or "$(" pairs).
+// isSplit is true when the character is a top-level pipe.
+func (ps *pipeScanner) feed(cmd string, i int) (advance int, isSplit bool) {
+	ch := cmd[i]
+	if ch == '\\' && !ps.inSingle && i+1 < len(cmd) {
+		return 1, false // skip escaped char
+	}
+	if ps.toggleQuote(ch) {
+		return 0, false
+	}
+	if ch == '$' && !ps.inSingle && !ps.inBtick && i+1 < len(cmd) && cmd[i+1] == '(' {
+		ps.depth++
+		return 1, false
+	}
+	if ch == ')' && !ps.inSingle && !ps.inBtick && ps.depth > 0 {
+		ps.depth--
+		return 0, false
+	}
+	if ch == '|' && !ps.inSingle && !ps.inDouble && !ps.inBtick && ps.depth == 0 {
+		return 0, true
+	}
+	return 0, false
+}
+
+// toggleQuote toggles the appropriate quote state flag and reports whether ch
+// was a quote character that was handled.
+func (ps *pipeScanner) toggleQuote(ch byte) bool {
+	switch {
+	case ch == '\'' && !ps.inDouble && !ps.inBtick:
+		ps.inSingle = !ps.inSingle
+		return true
+	case ch == '"' && !ps.inSingle && !ps.inBtick:
+		ps.inDouble = !ps.inDouble
+		return true
+	case ch == '`' && !ps.inSingle && !ps.inDouble:
+		ps.inBtick = !ps.inBtick
+		return true
+	}
+	return false
+}
+
+// isPipeTargetSafePython reports whether a pipe segment whose base command is
+// "python" or "python3" is safe. It is safe when the interpreter is invoked
+// with -c (inline code), -m (module), or a heredoc (<<) because it does not
+// read arbitrary code from stdin. Bare `python3` (no args) reads stdin and is
+// dangerous.
+func isPipeTargetSafePython(fields []string) bool {
+	if len(fields) < 2 {
+		return false // bare python — reads from stdin
+	}
+	for _, f := range fields[1:] {
+		if f == "-c" || f == "-m" {
+			return true
+		}
+		// A heredoc marker (e.g. `<< 'PYEOF'`) means the script body is
+		// embedded in the command, not read from the pipe — safe.
+		if strings.HasPrefix(f, "<<") {
+			return true
+		}
+		// Stop at first non-flag argument.
+		if len(f) > 0 && f[0] != '-' {
+			break
+		}
+	}
+	return false
+}
+
 // baseCommand extracts the base name from a possibly path-qualified command.
 // Trailing slashes are stripped before extracting the base name.
 func baseCommand(cmd string) string {
@@ -1381,11 +1602,13 @@ func isDangerousTarget(arg string) bool {
 	return false
 }
 
-// containsPipeToShell checks whether a command string contains a pipe to a
-// common shell or interpreter.
+// containsPipeToShell checks whether a command string contains a top-level
+// pipe to a common shell or interpreter. Pipes inside subshells ($(...)),
+// backticks, or quotes are ignored. Python/python3 with -c or -m flags is
+// considered safe (inline code, not stdin eval).
 func containsPipeToShell(command string) bool {
 	shells := []string{"sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby", "node"}
-	parts := strings.Split(command, "|")
+	parts := splitTopLevelPipes(command)
 	for _, part := range parts[1:] {
 		trimmed := strings.TrimSpace(part)
 		fields := strings.Fields(trimmed)
@@ -1395,6 +1618,9 @@ func containsPipeToShell(command string) bool {
 		target := baseCommand(fields[0])
 		for _, sh := range shells {
 			if target == sh {
+				if (target == cmdPython || target == cmdPython3) && isPipeTargetSafePython(fields) {
+					continue
+				}
 				return true
 			}
 		}
