@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **classifier**: Fix ~242 false positives in command classifier rules
+  - `rsNC`/`rsNcat`: Use word-boundary matching so `rsync -e ssh`, `grep -c`, `scutil --nc` no longer trigger the reverse-shell rule; also check `-e`/`-c` flags only in the same compound-command segment as `nc`
+  - `curlPipeShellRule`/`containsPipeToShell`: Allow `python`/`python3` with `-c` or `-m` flags (inline code, not stdin eval); bare `python3` still flagged
+  - `rsPythonSocket`: Inline `python -c "import socket"` no longer flagged unless reverse-shell indicators (dup2, subprocess.call, subprocess.popen, pty.spawn, os.system, /bin/sh, /bin/bash) are present
+  - Pipe splitting now uses `splitTopLevelPipes` that respects `$(...)` subshells, backticks, and quotes, preventing pipes inside `$(echo|shasum)` from being treated as top-level pipes
+
 ### Added
 
 - **windows**: Native sandbox using CreateRestrictedToken + Low Integrity Level for process privilege reduction
