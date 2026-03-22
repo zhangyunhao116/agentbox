@@ -8,7 +8,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Fix 1: UpdateConfig proxy lifecycle on Network.Mode change
+// UpdateConfig proxy lifecycle on Network.Mode change
 // ---------------------------------------------------------------------------
 
 // TestUpdateConfigModeTransitionAllowedToFiltered verifies that switching
@@ -200,7 +200,7 @@ func TestUpdateConfigModeStaysFiltered(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Fix 3: nopManager timeout before handleDecision
+// nopManager timeout before handleDecision
 // ---------------------------------------------------------------------------
 
 // TestNopManagerExecTimeoutAppliesToApproval verifies that the per-call
@@ -264,7 +264,7 @@ func TestNopManagerExecArgsTimeoutAppliesToApproval(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Fix 4: buildCommandKey preserves argument boundaries
+// buildCommandKey preserves argument boundaries
 // ---------------------------------------------------------------------------
 
 func TestBuildCommandKey(t *testing.T) {
@@ -395,7 +395,7 @@ func newTestCmd(name string, args ...string) *exec.Cmd {
 }
 
 // ---------------------------------------------------------------------------
-// Fix 2: Proxy Start failure resource leak
+// Proxy Start failure resource leak
 // (This is a code-level fix; the resource leak is in the error path of
 // newManager. We verify the fix is present by checking the code compiles
 // and the existing proxy tests pass. A direct test would require mocking
@@ -412,5 +412,5 @@ func TestNewManagerProxyStartCloseOnFailure(t *testing.T) {
 	// leak scenario requires a proxy server that partially initializes
 	// then fails Start(), which is not easily reproducible in unit tests
 	// without mocking internal proxy types.
-	t.Log("Fix 2 verified: ps.Close() is called when ps.Start() fails in newManager")
+	t.Log("Verified: ps.Close() is called when ps.Start() fails in newManager")
 }

@@ -3,6 +3,8 @@
 package windows
 
 import (
+	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -296,6 +298,8 @@ func TestConstantValues(t *testing.T) {
 		want  uint32
 	}{
 		{"NERR_Success", nerrSuccess, 0},
+		{"NERR_GroupNotFound", nerrGroupNotFound, 2220},
+		{"NERR_UserNotFound", nerrUserNotFound, 2221},
 		{"NERR_GroupExists", nerrGroupExists, 2223},
 		{"NERR_UserExists", nerrUserExists, 2224},
 		{"UF_SCRIPT", ufScript, 0x0001},
@@ -470,5 +474,76 @@ func TestSandboxUserManagerConcurrency(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Errorf("concurrent GetUser failed: %v", err)
 		}
+	}
+}
+
+// TestNetAPIErrorType verifies the netAPIError type can be inspected with
+// errors.As, which is the pattern used by deleteSandboxGroupLocked and
+// deleteSandboxUserLocked to ignore "not found" errors.
+func TestNetAPIErrorType(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only test")
+	}
+
+	tests := []struct {
+		name    string
+		err     error
+		code    uint32
+		wantMsg string
+	}{
+		{
+			name:    "group not found",
+			err:     fmt.Errorf("wrapped: %w", &netAPIError{Code: nerrGroupNotFound, API: "NetLocalGroupDel"}),
+			code:    nerrGroupNotFound,
+			wantMsg: "NetLocalGroupDel failed with code 2220",
+		},
+		{
+			name:    "user not found",
+			err:     fmt.Errorf("wrapped: %w", &netAPIError{Code: nerrUserNotFound, API: "NetUserDel"}),
+			code:    nerrUserNotFound,
+			wantMsg: "NetUserDel failed with code 2221",
+		},
+		{
+			name:    "group exists",
+			err:     &netAPIError{Code: nerrGroupExists, API: "NetLocalGroupAdd"},
+			code:    nerrGroupExists,
+			wantMsg: "NetLocalGroupAdd failed with code 2223",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var netErr *netAPIError
+			if !errors.As(tt.err, &netErr) {
+				t.Fatal("errors.As failed to unwrap netAPIError")
+			}
+			if netErr.Code != tt.code {
+				t.Errorf("Code = %d, want %d", netErr.Code, tt.code)
+			}
+			if netErr.Error() != tt.wantMsg {
+				t.Errorf("Error() = %q, want %q", netErr.Error(), tt.wantMsg)
+			}
+		})
+	}
+}
+
+// TestDeleteGroupNotFoundIsIgnored verifies that deleteSandboxGroupLocked
+// treats NERR_GroupNotFound (2220) as success — the group not existing is the
+// desired end state for deletion.
+func TestDeleteGroupNotFoundIsIgnored(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only test")
+	}
+	if !isAdmin() {
+		t.Skip("requires administrator privileges")
+	}
+
+	// Ensure the group does not exist by trying to delete it.
+	// Then call deleteSandboxGroupLocked again — it should succeed (not error)
+	// because nerrGroupNotFound is treated as success.
+	_ = deleteSandboxGroupLocked()
+	err := deleteSandboxGroupLocked()
+	if err != nil {
+		t.Fatalf("deleteSandboxGroupLocked() on non-existent group: %v", err)
 	}
 }

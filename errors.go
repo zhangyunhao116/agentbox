@@ -30,15 +30,18 @@ var (
 
 	// ErrNilCommand indicates a nil *exec.Cmd was passed to Wrap.
 	ErrNilCommand = errors.New("agentbox: cmd must not be nil")
+
+	// ErrEmptyArgs indicates that command args must not be empty.
+	ErrEmptyArgs = errors.New("agentbox: command args must not be empty")
 )
 
 // ForbiddenCommandError is returned when a command is rejected by the classifier.
 // It wraps ErrForbiddenCommand so that errors.Is(err, ErrForbiddenCommand) still works.
 type ForbiddenCommandError struct {
 	// Command is the command string that was forbidden.
-	Command string
+	Command string `json:"command"`
 	// Reason explains why the command was forbidden.
-	Reason string
+	Reason string `json:"reason"`
 }
 
 func (e *ForbiddenCommandError) Error() string {
@@ -53,9 +56,9 @@ func (e *ForbiddenCommandError) Unwrap() error {
 // It wraps ErrEscalatedCommand so that errors.Is(err, ErrEscalatedCommand) still works.
 type EscalatedCommandError struct {
 	// Command is the command string that was escalated.
-	Command string
+	Command string `json:"command"`
 	// Reason explains why the command was escalated.
-	Reason string
+	Reason string `json:"reason"`
 }
 
 func (e *EscalatedCommandError) Error() string {

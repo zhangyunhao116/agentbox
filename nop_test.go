@@ -72,7 +72,8 @@ func TestNopManagerExecStderr(t *testing.T) {
 
 func TestNopManagerExecArgs(t *testing.T) {
 	mgr := NewNopManager()
-	result, err := mgr.ExecArgs(context.Background(), "echo", []string{"world"})
+	name, args := testutil.EchoCommand("world")
+	result, err := mgr.ExecArgs(context.Background(), name, args)
 	if err != nil {
 		t.Fatalf("ExecArgs() error: %v", err)
 	}
@@ -629,7 +630,8 @@ func TestNopManagerExecArgsEscalatedApproved(t *testing.T) {
 		return Approve, nil
 	})
 	escalateAll := &mockClassifier{result: ClassifyResult{Decision: Escalated, Reason: "needs approval"}}
-	result, err := mgr.ExecArgs(context.Background(), "echo", []string{"approved"}, WithClassifier(escalateAll))
+	name, args := testutil.EchoCommand("approved")
+	result, err := mgr.ExecArgs(context.Background(), name, args, WithClassifier(escalateAll))
 	if err != nil {
 		t.Fatalf("ExecArgs() error: %v", err)
 	}
@@ -833,8 +835,8 @@ func TestNopManagerWrapEmptyArgs(t *testing.T) {
 	if err == nil {
 		t.Fatal("Wrap() should have returned an error for empty Args")
 	}
-	if !errors.Is(err, ErrNilCommand) {
-		t.Errorf("Wrap() error = %v, want ErrNilCommand", err)
+	if !errors.Is(err, ErrEmptyArgs) {
+		t.Errorf("Wrap() error = %v, want ErrEmptyArgs", err)
 	}
 }
 

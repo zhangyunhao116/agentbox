@@ -249,6 +249,12 @@ func deleteSandboxGroupLocked() error {
 
 	err = netLocalGroupDel(nil, groupNamePtr)
 	if err != nil {
+		// Ignore "group not found" errors — the group not existing is the
+		// desired end state for deletion.
+		var netErr *netAPIError
+		if errors.As(err, &netErr) && netErr.Code == nerrGroupNotFound {
+			return nil
+		}
 		return fmt.Errorf("NetLocalGroupDel failed: %w", err)
 	}
 
@@ -346,6 +352,12 @@ func deleteSandboxUserLocked(username string) error {
 
 	err = netUserDel(nil, usernamePtr)
 	if err != nil {
+		// Ignore "user not found" errors — the user not existing is the
+		// desired end state for deletion.
+		var netErr *netAPIError
+		if errors.As(err, &netErr) && netErr.Code == nerrUserNotFound {
+			return nil
+		}
 		return fmt.Errorf("NetUserDel failed: %w", err)
 	}
 

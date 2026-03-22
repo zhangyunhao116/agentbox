@@ -104,10 +104,10 @@ func TestNewManagerWithOptions(t *testing.T) {
 }
 
 func TestConvenienceFunctions(t *testing.T) {
-	// Convenience functions use DefaultConfig() which defaults Shell to
-	// /bin/sh — not available on Windows until defaultShell is made
-	// platform-aware.
-	testutil.SkipIfWindows(t, "convenience functions use /bin/sh as default shell")
+	// Convenience functions use DefaultConfig() which defaults Shell via
+	// defaultShellPath() — platform-aware (cmd.exe on Windows, /bin/sh on Unix).
+	// However, the commands below are Unix-style shell commands.
+	testutil.SkipIfWindows(t, "convenience function tests use Unix shell commands")
 	ctx := context.Background()
 
 	t.Run("Exec", func(t *testing.T) {

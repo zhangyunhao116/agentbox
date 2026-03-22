@@ -57,3 +57,6 @@ Thumbs.db
 
 # Misc
 /EOF
+all_commands_merged.json
+all_execute_commands.json
+execute_commands_all_raw.json

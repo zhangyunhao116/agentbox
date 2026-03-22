@@ -141,9 +141,14 @@ func run() error {
 		agentbox.DefaultClassifier(),
 	)
 
-	// Set up an approval callback that logs the request and auto-denies.
-	// In production you would prompt the user or call an external API.
+	// Set up an approval callback. During bootstrap (git init/add/commit),
+	// we auto-approve. Once the repo is ready we switch to auto-deny so
+	// that escalated write commands are rejected in the demo.
+	autoApprove := true
 	cfg.ApprovalCallback = func(_ context.Context, req agentbox.ApprovalRequest) (agentbox.ApprovalDecision, error) {
+		if autoApprove {
+			return agentbox.Approve, nil
+		}
 		fmt.Printf("Approval requested:\n")
 		fmt.Printf("  command=%q\n", req.Command)
 		fmt.Printf("  reason=%q\n", req.Reason)
@@ -185,6 +190,9 @@ func run() error {
 		}
 	}
 	fmt.Printf("Repository initialised in temp dir.\n\n")
+
+	// Switch to auto-deny for the rest of the demo.
+	autoApprove = false
 
 	// ---------------------------------------------------------------
 	// 1. Read-only git commands — these should succeed (decision=Allow).

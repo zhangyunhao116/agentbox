@@ -36,6 +36,30 @@ func (f FallbackPolicy) String() string {
 	}
 }
 
+// MarshalText implements encoding.TextMarshaler.
+// It encodes the FallbackPolicy as its string representation (e.g., "strict", "warn").
+func (f FallbackPolicy) MarshalText() ([]byte, error) {
+	s := f.String()
+	if s == unknownStr {
+		return nil, fmt.Errorf("agentbox: cannot marshal unknown FallbackPolicy value %d", int(f))
+	}
+	return []byte(s), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+// It accepts the lowercase string representations: "strict", "warn".
+func (f *FallbackPolicy) UnmarshalText(text []byte) error {
+	switch string(text) {
+	case "strict":
+		*f = FallbackStrict
+	case "warn":
+		*f = FallbackWarn
+	default:
+		return fmt.Errorf("unknown fallback policy: %q", text)
+	}
+	return nil
+}
+
 // NetworkMode determines how network access is handled inside the sandbox.
 type NetworkMode int
 
@@ -56,12 +80,38 @@ func (n NetworkMode) String() string {
 	case NetworkFiltered:
 		return "filtered"
 	case NetworkBlocked:
-		return "blocked"
+		return "blocked" //nolint:goconst // duplicated in UnmarshalText switch by design
 	case NetworkAllowed:
 		return "allowed"
 	default:
 		return unknownStr
 	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+// It encodes the NetworkMode as its string representation (e.g., "filtered", "blocked", "allowed").
+func (n NetworkMode) MarshalText() ([]byte, error) {
+	s := n.String()
+	if s == unknownStr {
+		return nil, fmt.Errorf("agentbox: cannot marshal unknown NetworkMode value %d", int(n))
+	}
+	return []byte(s), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+// It accepts the lowercase string representations: "filtered", "blocked", "allowed".
+func (n *NetworkMode) UnmarshalText(text []byte) error {
+	switch string(text) {
+	case "filtered":
+		*n = NetworkFiltered
+	case "blocked":
+		*n = NetworkBlocked
+	case "allowed":
+		*n = NetworkAllowed
+	default:
+		return fmt.Errorf("unknown network mode: %q", text)
+	}
+	return nil
 }
 
 // ResourceLimits specifies resource constraints for sandboxed processes.
@@ -80,52 +130,52 @@ func DefaultResourceLimits() *ResourceLimits {
 // FilesystemConfig defines filesystem access restrictions for the sandbox.
 type FilesystemConfig struct {
 	// WritableRoots lists directories where write access is permitted.
-	WritableRoots []string
+	WritableRoots []string `json:"writableRoots,omitempty"`
 
 	// DenyWrite lists path patterns that must never be writable.
-	DenyWrite []string
+	DenyWrite []string `json:"denyWrite,omitempty"`
 
 	// DenyRead lists path patterns that must never be readable.
-	DenyRead []string
+	DenyRead []string `json:"denyRead,omitempty"`
 
 	// AllowGitConfig permits read access to ~/.gitconfig and related files.
-	AllowGitConfig bool
+	AllowGitConfig bool `json:"allowGitConfig,omitempty"`
 
 	// AutoProtectDangerousFiles enables automatic scanning of WritableRoots
 	// for dangerous files (.bashrc, .gitconfig, etc.) and adds them to DenyWrite.
-	AutoProtectDangerousFiles bool
+	AutoProtectDangerousFiles bool `json:"autoProtectDangerousFiles,omitempty"`
 
 	// DangerousFileScanDepth limits directory traversal depth when scanning
 	// for dangerous files. 0 means use default (5).
-	DangerousFileScanDepth int
+	DangerousFileScanDepth int `json:"dangerousFileScanDepth,omitempty"`
 }
 
 // NetworkConfig defines network access restrictions for the sandbox.
 type NetworkConfig struct {
 	// Mode determines the overall network access policy.
-	Mode NetworkMode
+	Mode NetworkMode `json:"mode"`
 
 	// AllowedDomains lists domain patterns that are permitted when Mode is NetworkFiltered.
-	AllowedDomains []string
+	AllowedDomains []string `json:"allowedDomains,omitempty"`
 
 	// DeniedDomains lists domain patterns that are always blocked.
-	DeniedDomains []string
+	DeniedDomains []string `json:"deniedDomains,omitempty"`
 
 	// AllowLocalBinding permits sandboxed processes to bind to local ports
 	// (e.g., for development servers). Only effective on macOS.
-	AllowLocalBinding bool
+	AllowLocalBinding bool `json:"allowLocalBinding,omitempty"`
 
 	// AllowAllUnixSockets permits all Unix domain socket connections.
 	// Only effective on macOS.
-	AllowAllUnixSockets bool
+	AllowAllUnixSockets bool `json:"allowAllUnixSockets,omitempty"`
 
 	// AllowUnixSockets lists specific Unix socket paths that are permitted.
 	// Only effective on macOS.
-	AllowUnixSockets []string
+	AllowUnixSockets []string `json:"allowUnixSockets,omitempty"`
 
 	// MITMProxy configures routing of specific domains through an upstream
 	// MITM proxy via Unix socket, for enterprise TLS inspection.
-	MITMProxy *MITMProxyConfig
+	MITMProxy *MITMProxyConfig `json:"mitmProxy,omitempty"`
 
 	// OnRequest is an optional callback invoked for each outgoing connection attempt.
 	// It receives the target host and port and returns whether the connection is allowed.
@@ -133,56 +183,72 @@ type NetworkConfig struct {
 	//
 	// OnRequest is shared by reference across the manager and any config snapshots.
 	// Implementations must be safe for concurrent use by multiple goroutines.
-	OnRequest func(ctx context.Context, host string, port int) (bool, error)
+	OnRequest func(ctx context.Context, host string, port int) (bool, error) `json:"-"`
 }
 
 // MITMProxyConfig configures MITM proxy routing.
 type MITMProxyConfig struct {
 	// SocketPath is the Unix socket path to the MITM proxy.
-	SocketPath string
+	SocketPath string `json:"socketPath"`
 
 	// Domains lists domain patterns to route through the MITM proxy.
 	// Supports exact match and wildcard prefix (e.g., "*.example.com").
-	Domains []string
+	Domains []string `json:"domains,omitempty"`
 }
 
 // Config holds the complete configuration for a sandbox Manager.
+// Config should be created using DefaultConfig, DevelopmentConfig, or CIConfig
+// rather than as a zero-value literal, since several fields require non-zero
+// defaults for correct operation.
+//
+// Copying a Config value is safe; however, fields holding reference types
+// (Logger, OnRequest, ApprovalCallback, ApprovalCache, Classifier) are
+// shared between copies.
 type Config struct {
 	// Filesystem defines filesystem access restrictions.
-	Filesystem FilesystemConfig
+	Filesystem FilesystemConfig `json:"filesystem"`
 
 	// Network defines network access restrictions.
-	Network NetworkConfig
+	Network NetworkConfig `json:"network"`
 
 	// Classifier determines how commands are classified.
-	Classifier Classifier
+	Classifier Classifier `json:"-"`
 
 	// Shell is the path to the shell used for command execution.
 	// If empty, the system default shell is used.
-	Shell string
+	Shell string `json:"shell,omitempty"`
 
 	// MaxOutputBytes limits the size of captured stdout/stderr.
 	// 0 means no limit. Defaults to defaultMaxOutputBytes (10 MB) when
 	// created via DefaultConfig(). Set explicitly to 0 to disable the limit.
-	MaxOutputBytes int
+	MaxOutputBytes int `json:"maxOutputBytes,omitempty"`
 
 	// ResourceLimits defines resource constraints for sandboxed processes.
 	// If nil, DefaultResourceLimits() is used.
-	ResourceLimits *ResourceLimits
+	ResourceLimits *ResourceLimits `json:"resourceLimits,omitempty"`
 
 	// FallbackPolicy determines behavior when sandboxing is unavailable.
-	FallbackPolicy FallbackPolicy
+	FallbackPolicy FallbackPolicy `json:"fallbackPolicy"`
 
 	// Logger is the structured logger for operational messages such as
 	// sandbox fallback warnings, wrapping errors, and cleanup diagnostics.
 	// If nil, slog.Default() is used.
-	Logger *slog.Logger
+	Logger *slog.Logger `json:"-"`
 
 	// ApprovalCallback is invoked when a command is classified as Escalated.
 	// The callback must be safe for concurrent use, as it may be invoked
 	// from multiple goroutines simultaneously.
 	// If nil, escalated commands return ErrEscalatedCommand.
-	ApprovalCallback ApprovalCallback
+	ApprovalCallback ApprovalCallback `json:"-"`
+
+	// ApprovalCache caches user approval decisions for escalated commands,
+	// avoiding repeated prompts for the same command. When set, the cache
+	// is consulted before invoking ApprovalCallback, and the callback's
+	// result is stored after invocation. Only Escalated command decisions
+	// are cached; Forbidden commands are never cached.
+	// If nil, no caching is performed (every escalated command triggers
+	// the callback).
+	ApprovalCache ApprovalCache `json:"-"`
 }
 
 // DefaultConfig returns a Config with secure defaults suitable for most use cases.
@@ -435,8 +501,8 @@ func validateDomainPattern(pattern string) error {
 }
 
 // deepCopyConfig returns a copy of cfg with all slice fields deep-copied
-// to prevent aliasing. Callback fields (OnRequest, ApprovalCallback) and Logger
-// are shared by reference intentionally.
+// to prevent aliasing. Reference-type fields (OnRequest, ApprovalCallback,
+// ApprovalCache, Classifier, Logger) are shared by reference intentionally.
 func deepCopyConfig(cfg *Config) Config {
 	cfgCopy := *cfg
 	cfgCopy.Filesystem.WritableRoots = append([]string{}, cfg.Filesystem.WritableRoots...)

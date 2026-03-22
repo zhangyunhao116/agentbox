@@ -2,9 +2,13 @@ package agentbox
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os/exec"
 )
+
+// Compile-time interface check: Manager satisfies io.Closer.
+var _ io.Closer = (Manager)(nil)
 
 // Manager provides sandboxed command execution.
 // Use NewManager to create an instance with a specific configuration.
@@ -32,7 +36,12 @@ type Manager interface {
 	// dry-run scenarios or pre-flight validation.
 	Check(ctx context.Context, command string) (ClassifyResult, error)
 
-	// Cleanup releases all resources held by the manager.
+	// Close releases resources. It is equivalent to Cleanup(context.Background()).
+	// Satisfies io.Closer.
+	// After Close is called, all subsequent calls return ErrManagerClosed.
+	Close() error
+
+	// Cleanup releases resources with an explicit context for cancellation control.
 	// After Cleanup is called, all subsequent calls return ErrManagerClosed.
 	Cleanup(ctx context.Context) error
 
@@ -100,7 +109,8 @@ func Check(ctx context.Context, command string) (ClassifyResult, error) {
 }
 
 // NewManager creates a new sandbox Manager with the given configuration.
-// The configuration is validated before the manager is created.
+// If cfg is nil, DefaultConfig is used. The configuration is validated
+// before the manager is created.
 //
 // If the platform sandbox is unavailable, behavior depends on FallbackPolicy:
 //   - FallbackStrict (default): returns ErrUnsupportedPlatform.

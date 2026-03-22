@@ -1,7 +1,6 @@
 package agentbox
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,8 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -19,26 +16,21 @@ import (
 	"github.com/zhangyunhao116/agentbox/proxy"
 )
 
-const (
-	// defaultMaxOutputBytes is the default limit for captured stdout/stderr (10 MB).
-	defaultMaxOutputBytes = 10 * 1024 * 1024
-
-	// defaultShell is the default shell used for command execution.
-	defaultShell = "/bin/sh"
-)
+// defaultMaxOutputBytes is the default limit for captured stdout/stderr (10 MB).
+const defaultMaxOutputBytes = 10 * 1024 * 1024
 
 // detectPlatformFn is the function used to detect the sandbox platform.
 // It defaults to platform.Detect and can be overridden in tests.
 var detectPlatformFn = platform.Detect
 
-// manager is the core Manager implementation that orchestrates
-// platform-specific sandboxing, command classification, and option merging.
+// manager is the primary Manager implementation backed by a platform-specific sandbox.
 type manager struct {
 	mu               sync.RWMutex
 	closed           bool
 	cfg              *Config
 	platform         platform.Platform
 	approvalCallback ApprovalCallback
+	approvalCache    ApprovalCache // user-provided cache for escalated command decisions
 	logger           *slog.Logger
 	proxy            *proxy.Server
 	proxyFilter      *proxy.DomainFilter
@@ -52,7 +44,7 @@ type manager struct {
 // checks availability according to the FallbackPolicy.
 func newManager(cfg *Config) (Manager, error) {
 	if cfg == nil {
-		return nil, fmt.Errorf("%w: config must not be nil", ErrConfigInvalid)
+		cfg = DefaultConfig()
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -77,7 +69,7 @@ func newManager(cfg *Config) (Manager, error) {
 		cfgCopy.Classifier = DefaultClassifier()
 	}
 	if cfgCopy.Shell == "" {
-		cfgCopy.Shell = defaultShell
+		cfgCopy.Shell = defaultShellPath()
 	}
 	if cfgCopy.ResourceLimits == nil {
 		cfgCopy.ResourceLimits = DefaultResourceLimits()
@@ -115,6 +107,7 @@ func newManager(cfg *Config) (Manager, error) {
 		cfg:              &cfgCopy,
 		platform:         plat,
 		approvalCallback: cfgCopy.ApprovalCallback,
+		approvalCache:    cfgCopy.ApprovalCache,
 		logger:           logger,
 		sessionApprovals: make(map[string]struct{}),
 	}
@@ -171,7 +164,7 @@ func mergeCallOptions(opts ...Option) *callOptions {
 	return co
 }
 
-// configSnapshot holds a shallow copy of Config taken under the read lock.
+// configSnapshot holds a read-only copy of manager configuration for lock-free use.
 // Fields that are pointers/slices are safe because UpdateConfig deep-copies
 // them before storing, so the snapshot references the old (immutable) data.
 // See UpdateConfig's call to deepCopyConfig which copies WritableRoots,
@@ -192,21 +185,16 @@ func (m *manager) snapshotConfig() (configSnapshot, error) {
 }
 
 // classify runs the classifier on a shell command string and returns the result.
-// If a per-call classifier is provided via options, it takes precedence.
+// If per-call custom rules or a per-call classifier is provided via options,
+// they take precedence (custom rules are chained before the effective classifier).
 func classify(snap *configSnapshot, command string, co *callOptions) ClassifyResult {
-	cl := snap.cfg.Classifier
-	if co.classifier != nil {
-		cl = co.classifier
-	}
+	cl := resolveClassifier(snap.cfg.Classifier, co)
 	return cl.Classify(command)
 }
 
 // classifyArgs runs the classifier on a program name and argument list.
 func classifyArgs(snap *configSnapshot, name string, args []string, co *callOptions) ClassifyResult {
-	cl := snap.cfg.Classifier
-	if co.classifier != nil {
-		cl = co.classifier
-	}
+	cl := resolveClassifier(snap.cfg.Classifier, co)
 	return cl.ClassifyArgs(name, args)
 }
 
@@ -222,9 +210,22 @@ func (m *manager) handleDecision(ctx context.Context, result ClassifyResult, com
 		m.mu.RLock()
 		_, cached := m.sessionApprovals[normalizedCmd]
 		cb := m.approvalCallback
+		ac := m.approvalCache
 		m.mu.RUnlock()
 		if cached {
 			return nil
+		}
+
+		// Check user-provided approval cache (e.g., MemoryApprovalCache).
+		if ac != nil {
+			if d, ok := ac.Get(normalizedCmd); ok {
+				if d == Escalated {
+					// Cached as "denied" — block the command.
+					return &EscalatedCommandError{Command: command, Reason: "denied by cached decision"}
+				}
+				// Any other cached decision (Allow, Sandboxed) means approved.
+				return nil
+			}
 		}
 
 		// approvalCallback may be updated via UpdateConfig; read under lock above.
@@ -235,19 +236,30 @@ func (m *manager) handleDecision(ctx context.Context, result ClassifyResult, com
 			Command:  command,
 			Reason:   result.Reason,
 			Decision: result.Decision,
+			Rule:     result.Rule,
 		})
 		if err != nil {
 			return fmt.Errorf("%w: %w", &EscalatedCommandError{Command: command, Reason: result.Reason}, err)
 		}
 		switch decision {
 		case Approve:
-			// fall through to return nil
+			// Cache the approval so subsequent identical commands skip the callback.
+			if ac != nil {
+				ac.Set(normalizedCmd, Allow)
+			}
 		case ApproveSession:
 			m.mu.Lock()
 			m.sessionApprovals[normalizedCmd] = struct{}{}
 			m.mu.Unlock()
+			if ac != nil {
+				ac.Set(normalizedCmd, Allow)
+			}
 		default:
 			// Treat unknown/unset decisions as deny for safety.
+			// Cache the denial so subsequent identical commands are auto-denied.
+			if ac != nil {
+				ac.Set(normalizedCmd, Escalated)
+			}
 			return &EscalatedCommandError{Command: command, Reason: "denied by user"}
 		}
 		return nil
@@ -433,7 +445,7 @@ func (m *manager) Wrap(ctx context.Context, cmd *exec.Cmd, opts ...Option) error
 
 	// Reject commands with empty Args to prevent unclassified execution.
 	if len(cmd.Args) == 0 {
-		return fmt.Errorf("%w: cmd.Args must not be empty", ErrNilCommand)
+		return ErrEmptyArgs
 	}
 
 	// Classify the command from cmd.Args.
@@ -495,7 +507,7 @@ func (m *manager) Exec(ctx context.Context, command string, opts ...Option) (*Ex
 		shell = co.shell
 	}
 
-	cmd := exec.CommandContext(ctx, shell, "-c", command) //nolint:gosec // command is user-provided and classified before execution
+	cmd := exec.CommandContext(ctx, shell, defaultShellFlag(), command) //nolint:gosec // command is user-provided and classified before execution
 	if co.workingDir != "" {
 		cmd.Dir = co.workingDir
 	}
@@ -503,6 +515,10 @@ func (m *manager) Exec(ctx context.Context, command string, opts ...Option) (*Ex
 }
 
 func (m *manager) ExecArgs(ctx context.Context, name string, args []string, opts ...Option) (*ExecResult, error) {
+	if name == "" {
+		return nil, ErrEmptyArgs
+	}
+
 	snap, err := m.snapshotConfig()
 	if err != nil {
 		return nil, err
@@ -610,7 +626,6 @@ func (m *manager) tryWorkerExec(ctx context.Context, we platform.WorkerExecutor,
 	}
 }
 
-
 func (m *manager) Check(ctx context.Context, command string) (ClassifyResult, error) {
 	snap, err := m.snapshotConfig()
 	if err != nil {
@@ -618,6 +633,11 @@ func (m *manager) Check(ctx context.Context, command string) (ClassifyResult, er
 	}
 	co := &callOptions{}
 	return classify(&snap, command, co), nil
+}
+
+// Close implements io.Closer. It calls Cleanup with a background context.
+func (m *manager) Close() error {
+	return m.Cleanup(context.Background())
 }
 
 func (m *manager) Cleanup(ctx context.Context) error {
@@ -668,220 +688,4 @@ func (m *manager) injectProxyEnv(cmd *exec.Cmd) {
 		}
 		cmd.Env = append(cmd.Env, proxyEnv...)
 	}
-}
-
-// limitedWriter wraps a bytes.Buffer and stops writing after limit bytes.
-type limitedWriter struct {
-	buf   *bytes.Buffer
-	limit int
-}
-
-func (w *limitedWriter) Write(p []byte) (int, error) {
-	remaining := w.limit - w.buf.Len()
-	if remaining <= 0 {
-		return len(p), nil // discard but report success
-	}
-	if len(p) <= remaining {
-		return w.buf.Write(p)
-	}
-	// Write only what fits, but report full length to avoid io.ErrShortWrite.
-	_, err := w.buf.Write(p[:remaining])
-	if err != nil {
-		return 0, err
-	}
-	return len(p), nil
-}
-
-// UpdateConfig dynamically updates the manager's configuration.
-// The new config is validated before being applied. Network filter rules
-// and the classifier are hot-reloaded; filesystem changes take effect on
-// the next Wrap/Exec call. When Network.Mode transitions between filtered
-// and non-filtered, the proxy server is started or stopped accordingly.
-func (m *manager) UpdateConfig(cfg *Config) error {
-	if cfg == nil {
-		return fmt.Errorf("%w: config must not be nil", ErrConfigInvalid)
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.closed {
-		return ErrManagerClosed
-	}
-
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
-
-	// Deep-copy slices to avoid aliasing the caller's data.
-	cfgCopy := deepCopyConfig(cfg)
-
-	// Normalize relative writable roots to absolute paths.
-	for i, root := range cfgCopy.Filesystem.WritableRoots {
-		if !filepath.IsAbs(root) {
-			abs, err := filepath.Abs(root)
-			if err != nil {
-				return fmt.Errorf("%w: cannot resolve WritableRoots[%d] to absolute path: %w", ErrConfigInvalid, i, err)
-			}
-			cfgCopy.Filesystem.WritableRoots[i] = abs
-		}
-	}
-
-	// Validate shell existence before applying any side effects (proxy lifecycle, etc.)
-	// so that a validation failure does not leave the manager in a partially-updated state.
-	if cfgCopy.Shell != "" {
-		if _, err := os.Stat(cfgCopy.Shell); err != nil {
-			return fmt.Errorf("%w: shell %q does not exist: %w", ErrConfigInvalid, cfgCopy.Shell, err)
-		}
-	}
-
-	// Detect network mode transitions and manage proxy lifecycle.
-	oldMode := m.cfg.Network.Mode
-	newMode := cfgCopy.Network.Mode
-
-	if oldMode != newMode {
-		if err := m.handleModeTransition(oldMode, newMode, &cfgCopy); err != nil {
-			return err
-		}
-	}
-
-	// Hot-reload proxy filter rules if network domains changed (only when staying in filtered mode).
-	if m.proxyFilter != nil && oldMode == NetworkFiltered && newMode == NetworkFiltered {
-		oldNet := m.cfg.Network
-		newNet := cfgCopy.Network
-		if !stringSlicesEqual(oldNet.AllowedDomains, newNet.AllowedDomains) ||
-			!stringSlicesEqual(oldNet.DeniedDomains, newNet.DeniedDomains) {
-			if err := m.proxyFilter.UpdateRules(newNet.DeniedDomains, newNet.AllowedDomains); err != nil {
-				return fmt.Errorf("%w: failed to update proxy filter rules: %w", ErrConfigInvalid, err)
-			}
-		}
-	}
-
-	// Update classifier if changed (non-nil override).
-	if cfgCopy.Classifier != nil {
-		m.cfg.Classifier = cfgCopy.Classifier
-	}
-
-	// Apply the rest of the config fields.
-	m.cfg.Filesystem = cfgCopy.Filesystem
-	m.cfg.Network = cfgCopy.Network
-	if cfgCopy.Shell != "" {
-		m.cfg.Shell = cfgCopy.Shell
-	}
-	m.cfg.MaxOutputBytes = cfgCopy.MaxOutputBytes
-	m.cfg.ResourceLimits = cfgCopy.ResourceLimits
-	m.cfg.FallbackPolicy = cfgCopy.FallbackPolicy
-
-	// Update the approval callback.
-	m.approvalCallback = cfgCopy.ApprovalCallback
-	m.cfg.ApprovalCallback = cfgCopy.ApprovalCallback
-
-	return nil
-}
-
-// handleModeTransition manages the proxy lifecycle when the network mode
-// changes. It starts the proxy when entering filtered mode and stops it
-// when leaving filtered mode. Must be called with m.mu held.
-func (m *manager) handleModeTransition(oldMode, newMode NetworkMode, cfgCopy *Config) error {
-	switch {
-	case newMode == NetworkFiltered && oldMode != NetworkFiltered:
-		// Starting filtered mode: create and start proxy.
-		filter, err := proxy.NewDomainFilter(&proxy.FilterConfig{
-			AllowedDomains: cfgCopy.Network.AllowedDomains,
-			DeniedDomains:  cfgCopy.Network.DeniedDomains,
-			OnRequest:      proxy.OnRequest(cfgCopy.Network.OnRequest),
-		})
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrProxyStartFailed, err)
-		}
-		proxyCfg := &proxy.Config{
-			Filter: filter,
-			Logger: m.logger,
-		}
-		if cfgCopy.Network.MITMProxy != nil {
-			proxyCfg.MITM = &proxy.MITMConfig{
-				SocketPath: cfgCopy.Network.MITMProxy.SocketPath,
-				Domains:    cfgCopy.Network.MITMProxy.Domains,
-			}
-		}
-		ps, err := proxy.NewServer(proxyCfg)
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrProxyStartFailed, err)
-		}
-		httpPort, socksPort, err := ps.Start(context.Background())
-		if err != nil {
-			_ = ps.Close()
-			return fmt.Errorf("%w: %w", ErrProxyStartFailed, err)
-		}
-		// Stop old proxy if any (shouldn't happen but be safe).
-		if m.proxy != nil {
-			_ = m.proxy.Close()
-		}
-		m.proxy = ps
-		m.proxyFilter = filter
-		m.httpProxyPort = httpPort
-		m.socksProxyPort = socksPort
-
-	case newMode != NetworkFiltered && oldMode == NetworkFiltered:
-		// Leaving filtered mode: stop proxy and clear ports.
-		if m.proxy != nil {
-			_ = m.proxy.Close()
-		}
-		m.proxy = nil
-		m.proxyFilter = nil
-		m.httpProxyPort = 0
-		m.socksProxyPort = 0
-	}
-	return nil
-}
-
-// stringSlicesEqual reports whether two string slices have identical contents.
-func stringSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// filterOutPrefix returns a new slice with all entries that have the given
-// prefix removed. This is used to strip git worktree-specific deny paths.
-func filterOutPrefix(paths []string, prefix string) []string {
-	result := make([]string, 0, len(paths))
-	for _, p := range paths {
-		if !strings.HasPrefix(p, prefix) {
-			result = append(result, p)
-		}
-	}
-	return result
-}
-
-// normalizeCommand collapses whitespace in a command string so that
-// "pip  install  requests" and "pip install requests" map to the same
-// session-approval cache key.
-func normalizeCommand(cmd string) string {
-	return strings.Join(strings.Fields(cmd), " ")
-}
-
-// buildCommandKey constructs a normalized command string from a program name
-// and argument list, preserving argument boundaries by quoting args that
-// contain spaces. This is used for approval cache keys and approval prompts.
-func buildCommandKey(name string, args []string) string {
-	if len(args) == 0 {
-		return name
-	}
-	parts := make([]string, 0, len(args)+1)
-	parts = append(parts, name)
-	for _, a := range args {
-		if strings.ContainsAny(a, " \t\n\"\\") {
-			parts = append(parts, strconv.Quote(a))
-		} else {
-			parts = append(parts, a)
-		}
-	}
-	return strings.Join(parts, " ")
 }

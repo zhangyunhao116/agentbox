@@ -119,6 +119,29 @@ func TestViolationType(t *testing.T) {
 	}
 }
 
+func TestViolationTypeString(t *testing.T) {
+	tests := []struct {
+		vt   ViolationType
+		want string
+	}{
+		{ViolationFileRead, "file-read"},
+		{ViolationFileWrite, "file-write"},
+		{ViolationNetwork, "network"},
+		{ViolationProcess, "process"},
+		{ViolationOther, "other"},
+		{ViolationType("custom"), "custom"},
+		{ViolationType(""), ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := tt.vt.String(); got != tt.want {
+				t.Errorf("ViolationType.String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestViolationTypeAssignment(t *testing.T) {
 	v := Violation{
 		Operation: ViolationFileWrite,
@@ -133,5 +156,20 @@ func TestViolationTypeAssignment(t *testing.T) {
 	}
 	if v.Detail != "write denied" {
 		t.Errorf("Detail: got %q, want %q", v.Detail, "write denied")
+	}
+}
+
+func TestExecResultString(t *testing.T) {
+	r := &ExecResult{
+		ExitCode:  0,
+		Stdout:    "hello",
+		Stderr:    "",
+		Duration:  42 * time.Millisecond,
+		Sandboxed: true,
+	}
+	got := r.String()
+	want := "exit=0 sandboxed=true duration=42ms stdout=5B stderr=0B"
+	if got != want {
+		t.Errorf("ExecResult.String() = %q, want %q", got, want)
 	}
 }
