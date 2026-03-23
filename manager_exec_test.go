@@ -567,8 +567,8 @@ func TestManagerWrapEmptyArgs(t *testing.T) {
 	cmd := &exec.Cmd{Path: "/bin/echo"}
 	cmd.Args = nil
 	err = mgr.Wrap(context.Background(), cmd)
-	if !errors.Is(err, ErrNilCommand) {
-		t.Errorf("Wrap() with empty args: got %v, want ErrNilCommand", err)
+	if !errors.Is(err, ErrEmptyArgs) {
+		t.Errorf("Wrap() with empty args: got %v, want ErrEmptyArgs", err)
 	}
 }
 

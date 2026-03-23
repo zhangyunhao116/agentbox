@@ -1,5 +1,7 @@
 package agentbox
 
+import "fmt"
+
 // unknownStr is the string representation for unknown enum values.
 const unknownStr = "unknown"
 
@@ -10,7 +12,9 @@ type Classifier interface {
 	// Classify inspects a shell command string and returns a classification result.
 	Classify(command string) ClassifyResult
 
-	// ClassifyArgs inspects a command specified as a program name and argument list.
+	// ClassifyArgs classifies a command given its base name and argument list.
+	// Implementations should handle a nil or empty args slice gracefully,
+	// typically treating it as a command with no arguments.
 	ClassifyArgs(name string, args []string) ClassifyResult
 }
 
@@ -49,14 +53,58 @@ func (d Decision) String() string {
 	}
 }
 
+// MarshalText implements encoding.TextMarshaler.
+// It encodes the Decision as its string representation (e.g., "sandboxed", "allow").
+func (d Decision) MarshalText() ([]byte, error) {
+	s := d.String()
+	if s == unknownStr {
+		return nil, fmt.Errorf("agentbox: cannot marshal unknown Decision value %d", int(d))
+	}
+	return []byte(s), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+// It accepts the lowercase string representations: "sandboxed", "allow", "escalated", "forbidden".
+func (d *Decision) UnmarshalText(text []byte) error {
+	switch string(text) {
+	case "sandboxed":
+		*d = Sandboxed
+	case "allow":
+		*d = Allow
+	case "escalated":
+		*d = Escalated
+	case "forbidden":
+		*d = Forbidden
+	default:
+		return fmt.Errorf("unknown decision: %q", text)
+	}
+	return nil
+}
+
 // ClassifyResult holds the outcome of command classification.
 type ClassifyResult struct {
 	// Decision is the classification decision.
-	Decision Decision
+	Decision Decision `json:"decision"`
 
 	// Reason is a human-readable explanation of why this decision was made.
-	Reason string
+	Reason string `json:"reason,omitempty"`
 
 	// Rule is the identifier of the rule that matched, if any.
-	Rule string
+	Rule RuleName `json:"rule,omitempty"`
+}
+
+// String returns a human-readable representation of the classification result,
+// for example "forbidden (reverse-shell: detected reverse shell pattern)".
+func (r ClassifyResult) String() string {
+	s := r.Decision.String()
+	if r.Rule != "" {
+		s += " (" + string(r.Rule)
+		if r.Reason != "" {
+			s += ": " + r.Reason
+		}
+		s += ")"
+	} else if r.Reason != "" {
+		s += " (" + r.Reason + ")"
+	}
+	return s
 }

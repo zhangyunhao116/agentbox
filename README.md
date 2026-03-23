@@ -70,13 +70,15 @@ fmt.Println(result.Decision) // "forbidden"
 
 ### Manager (reusable, multi-command)
 
+Manager implements `io.Closer` for convenient resource cleanup:
+
 ```go
 cfg := agentbox.DefaultConfig()
 mgr, err := agentbox.NewManager(cfg)
 if err != nil {
     log.Fatal(err)
 }
-defer mgr.Cleanup(context.Background())
+defer mgr.Close() // or defer mgr.Cleanup(ctx) for context-aware cleanup
 
 result, _ := mgr.Exec(ctx, "echo hello")
 ```
@@ -99,37 +101,121 @@ Note that **all permitted commands run inside the sandbox** — the classifier o
 
 ### Command Classification
 
-The built-in classifier evaluates commands against 13 ordered rules and assigns one of four decisions:
+The built-in classifier evaluates commands against **44 ordered rules** and assigns one of four decisions:
 
-**Forbidden** — immediately blocked, never executed:
+**Forbidden** (17 rules) — immediately blocked, never executed:
 
 | Rule | Examples |
 |------|----------|
 | `fork-bomb` | `:(){ :\|:& };:` |
 | `recursive-delete-root` | `rm -rf /`, `rm -rf ~`, `rm -rf $HOME` |
 | `disk-wipe` | `dd of=/dev/sda`, `dd of=/dev/nvme0` |
-| `reverse-shell` | `/dev/tcp/`, `nc -e /bin/sh`, python/perl socket shells |
+| `reverse-shell` | `/dev/tcp/`, `nc -e /bin/sh`, python/perl/ruby/php socket shells |
 | `chmod-recursive-root` | `chmod -R 777 /` |
 | `chown-recursive-root` | `chown -R root:root /`, `chown -R user ~` |
 | `filesystem-format` | `mkfs.ext4 /dev/sda`, `fdisk /dev/sda`, `parted`, `shred` |
 | `curl-pipe-shell` | `curl ... \| sh`, `wget ... \| bash` |
+| `base64-pipe-shell` | `base64 -d \| sh`, `echo ... \| base64 -d \| bash` |
+| `ifs-bypass` | `IFS=... /bin/sh` |
+| `shutdown-reboot` | `shutdown`, `reboot`, `halt`, `poweroff` |
+| `kernel-module` | `insmod`, `rmmod`, `modprobe`, `depmod` |
+| `partition-management` | `gdisk`, `cfdisk`, `sfdisk` |
+| `history-exec` | `history \| sh`, `fc -s`, `fc -e` |
+| `destructive-find` | `find / -delete`, `find . -exec rm {} \;` |
+| `destructive-xargs` | `... \| xargs rm` |
+| `output-redirect-system` | `echo ... > /etc/passwd` |
 
-**Allow** — safe to execute without prompting (still sandboxed):
+**Escalated** (21 rules) — requires user approval via the `ApprovalCallback`:
+
+| Rule | Examples |
+|------|----------|
+| `sudo` | `sudo ...`, `doas ...` |
+| `su-privilege` | `su -`, `su root` |
+| `credential-access` | `cat ~/.ssh/id_rsa`, `cat .env` |
+| `user-management` | `useradd`, `userdel`, `passwd`, `groupadd` |
+| `global-install` | `npm install -g`, `pip install`, `yarn global add` |
+| `docker-build` | `docker build`, `docker push`, `docker pull` |
+| `docker-runtime` | `docker run`, `docker exec`, `docker compose up` |
+| `system-package-install` | `brew install`, `apt install`, `yum install` |
+| `process-kill` | `kill`, `killall`, `pkill` |
+| `git-write` | `git push`, `git commit`, `git merge`, `git rebase` |
+| `ssh-command` | `ssh user@host`, `scp`, `sftp` |
+| `file-transfer` | `rsync`, `scp`, `ftp` |
+| `download-to-file` | `curl -o`, `wget -O` |
+| `service-management` | `systemctl start`, `service restart`, `launchctl` |
+| `crontab-at` | `crontab -e`, `at` |
+| `file-permission` | `chmod`, `chown` (non-recursive) |
+| `firewall-management` | `iptables`, `ufw`, `firewall-cmd` |
+| `network-scan` | `nmap`, `masscan` |
+| `database-client` | `mysql`, `psql`, `redis-cli`, `mongo` |
+| `git-stash-drop` | `git stash drop`, `git stash clear` |
+| `eval-exec` | `eval "..."`, `exec ...` |
+
+**Allow** (6 rules) — safe to execute without prompting (still sandboxed):
 
 | Rule | Examples |
 |------|----------|
 | `common-safe-commands` | `ls`, `cat`, `echo`, `pwd`, `grep`, `head`, `tail`, `wc`, `sort`, `stat`, `du`, `df` |
 | `git-read-commands` | `git status`, `git log`, `git diff`, `git show`, `git branch` |
-
-**Escalated** — requires user approval via the `ApprovalCallback`:
-
-| Rule | Examples |
-|------|----------|
-| `global-install` | `npm install -g`, `pip install`, `yarn global add` |
-| `docker-build` | `docker build`, `docker push`, `docker pull` |
-| `system-package-install` | `brew install`, `apt install`, `yum install` |
+| `version-check` | `node --version`, `python --help` |
+| `windows-safe-commands` | `dir`, `type`, `where`, `Get-ChildItem`, `Get-Content` |
+| `cd-sleep` | `cd`, `pushd`, `popd`, `sleep` |
+| `process-list` | `ps`, `top`, `htop`, `pgrep` |
 
 **Sandboxed** — the default for any command that matches no rule. Executed inside the sandbox without prompting.
+
+### Custom Rules
+
+Override built-in classification with user-defined rules using glob patterns:
+
+```go
+result, err := mgr.Exec(ctx, "docker run ubuntu",
+    agentbox.WithCustomRules(
+        agentbox.UserRule{Pattern: "docker run *", Decision: agentbox.Allow, Description: "trusted docker"},
+    ),
+)
+```
+
+Custom rules are evaluated **before** built-in rules, so they can override any default decision. Patterns use [path.Match](https://pkg.go.dev/path#Match) glob syntax.
+
+### Rule Overrides
+
+Override specific built-in rules by name with type-safe constants:
+
+```go
+result, err := mgr.Exec(ctx, "docker run ubuntu",
+    agentbox.WithRuleOverrides(
+        agentbox.RuleOverride{Rule: agentbox.RuleDockerRuntime, Decision: agentbox.Allow},
+    ),
+)
+
+// List all built-in rule names
+names := agentbox.BuiltinRuleNames()
+```
+
+All rule name constants are exported (e.g., `RuleForkBomb`, `RuleSudo`, `RuleDockerRuntime`) for type safety and IDE autocomplete.
+
+### Protected Paths
+
+Prevent writes to sensitive directories (`.git/hooks`, CI config files, etc.):
+
+```go
+result, err := mgr.Exec(ctx, "rm .git/hooks/pre-commit",
+    agentbox.WithDefaultProtectedPaths(),
+)
+```
+
+### Approval Cache
+
+Cache user approval decisions to avoid repeated prompts for the same command patterns:
+
+```go
+cache := agentbox.NewMemoryApprovalCache()
+cfg := agentbox.DefaultConfig()
+agentbox.WithApprovalCache(cache)(cfg)
+```
+
+The `ApprovalCache` interface can be implemented for custom storage backends (e.g., database, file).
 
 ### Filesystem Isolation
 
@@ -251,6 +337,7 @@ cfg := agentbox.DefaultConfig()
 | `FallbackPolicy` | `FallbackPolicy` | `FallbackStrict` | Behavior when sandbox is unavailable |
 | `Logger` | `*slog.Logger` | `slog.Default()` | Structured logger for operational messages |
 | `ApprovalCallback` | `ApprovalCallback` | `nil` | Callback for escalated commands. If nil, escalated commands return `ErrEscalatedCommand`. |
+| `ApprovalCache` | `ApprovalCache` | `nil` | Cache for user approval decisions. Use `NewMemoryApprovalCache()` or implement the interface. |
 
 ### FilesystemConfig
 
@@ -290,6 +377,9 @@ cfg := agentbox.DefaultConfig()
 | `WithDenyRead(paths ...string)` | Deny read access to paths for a single call |
 | `WithDenyWrite(paths ...string)` | Deny write access to paths for a single call |
 | `WithMaxOutputBytes(n int)` | Override max captured output size for a single call |
+| `WithCustomRules(rules ...UserRule)` | Add user-defined classification rules (evaluated before built-ins) |
+| `WithRuleOverrides(overrides ...RuleOverride)` | Override built-in rule decisions by name |
+| `WithDefaultProtectedPaths()` | Enable protected path detection for sensitive directories |
 
 ## API Reference
 
@@ -388,6 +478,15 @@ if !check.OK() {
 
 `DependencyCheck` is a type alias for the platform-specific dependency check result. It exposes an `OK()` method and an `Errors` field listing any missing dependencies.
 
+### JSON Serialization
+
+All exported structs (`Config`, `ExecResult`, `ClassifyResult`, `ApprovalRequest`, etc.) carry JSON struct tags for serialization. `Decision` and `ApprovalDecision` values serialize as human-readable strings (`"allow"`, `"forbidden"`, `"escalated"`, `"sandboxed"`, `"approve"`, `"deny"`).
+
+```go
+result, _ := mgr.Exec(ctx, "echo hello")
+data, _ := json.Marshal(result)  // ExecResult with JSON tags
+```
+
 ## Performance
 
 Benchmarks comparing agentbox against other sandbox solutions for executing simple shell commands (`echo hello` and `go version`). All measurements use [hyperfine](https://github.com/sharkdp/hyperfine) for cold-start and hot-start latency, plus native batch execution for sustained throughput.
@@ -445,22 +544,27 @@ Bare execution (no sandbox) is shown for reference. Test commands: `echo hello` 
 
 ```
 agentbox/
-├── sandbox.go          # Manager interface, convenience functions (Exec, Wrap, ExecArgs)
-├── config.go           # Config, NetworkConfig, FilesystemConfig, ResourceLimits
-├── option.go           # Per-call Option types
-├── classifier.go       # Classifier interface, Decision, ClassifyResult
-├── classifier_rules.go # Built-in classification rules (13 rules), DefaultClassifier
-├── errors.go           # Sentinel error types
-├── result.go           # ExecResult, Violation
-├── manager.go          # Core manager implementation (sandbox orchestration)
-├── nop.go              # NopManager for FallbackWarn mode (no-op sandbox)
-├── reexec.go           # Linux re-exec sandbox helper (namespace setup)
-├── platform/           # Platform-specific sandbox backends
-│   ├── darwin/         # macOS: Seatbelt/SBPL profile generation + enforcement
-│   ├── linux/          # Linux: Namespaces + Landlock + Seccomp BPF
-│   └── windows/        # Windows: Native sandbox (Restricted Token + Job Object + ACLs)
-├── proxy/              # HTTP/SOCKS5 proxy with domain-level filtering
-└── internal/           # Internal utilities
+├── sandbox.go              # Manager interface, convenience functions (Exec, Wrap, ExecArgs)
+├── config.go               # Config, NetworkConfig, FilesystemConfig, ResourceLimits
+├── option.go               # Per-call Option types (WithCustomRules, WithRuleOverrides, etc.)
+├── classifier.go           # Classifier interface, Decision, ClassifyResult
+├── classifier_rules.go     # Built-in classification rules (44 rules), DefaultClassifier
+├── classifier_custom.go    # UserRule, custom rule classifier
+├── classifier_overrides.go # RuleOverride, override classifier
+├── classifier_rule_names.go # RuleName constants, BuiltinRuleNames()
+├── classifier_paths.go     # Protected path detection
+├── approval_cache.go       # ApprovalCache interface, MemoryApprovalCache
+├── errors.go               # Sentinel error types
+├── result.go               # ExecResult, Violation
+├── manager.go              # Core manager implementation (sandbox orchestration)
+├── nop.go                  # NopManager for FallbackWarn mode (no-op sandbox)
+├── reexec.go               # Linux re-exec sandbox helper (namespace setup)
+├── platform/               # Platform-specific sandbox backends
+│   ├── darwin/             # macOS: Seatbelt/SBPL profile generation + enforcement
+│   ├── linux/              # Linux: Namespaces + Landlock + Seccomp BPF
+│   └── windows/            # Windows: Native sandbox (Restricted Token + Job Object + ACLs)
+├── proxy/                  # HTTP/SOCKS5 proxy with domain-level filtering
+└── internal/               # Internal utilities
 ```
 
 ### Windows Native Sandbox

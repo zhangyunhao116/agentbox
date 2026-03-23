@@ -2,7 +2,10 @@ package main
 
 import (
 	"os/exec"
+	"strings"
 	"testing"
+
+	"github.com/zhangyunhao116/agentbox/testutil"
 )
 
 func TestSandboxBench(t *testing.T) {
@@ -11,20 +14,31 @@ func TestSandboxBench(t *testing.T) {
 	}
 
 	// Test successful command execution.
-	cmd := exec.Command("go", "run", ".", "echo", "hello")
+	// Use testutil helpers so that the command works on both Unix and Windows.
+	// EchoCommand returns (shell, shellArgs) — e.g. ("/bin/sh", ["-c", "echo hello"])
+	// on Unix or ("cmd.exe", ["/c", "echo hello"]) on Windows.
+	echoShell, echoArgs := testutil.EchoCommand("hello")
+	goRunArgs := append([]string{"run", "."}, echoShell)
+	goRunArgs = append(goRunArgs, echoArgs...)
+	cmd := exec.Command("go", goRunArgs...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go run failed: %v\nOutput: %s", err, out)
 	}
-	if string(out) != "hello\n" {
-		t.Errorf("expected 'hello\\n', got %q", out)
+	// Use TrimSpace to handle both \n (Unix) and \r\n (Windows) line endings.
+	if got := strings.TrimSpace(string(out)); got != "hello" {
+		t.Errorf("expected 'hello', got %q", got)
 	}
 
-	// Test exit code propagation using false command.
-	cmd = exec.Command("go", "run", ".", "false")
+	// Test exit code propagation using a cross-platform exit command.
+	// ExitCommand returns (shell, shellArgs) for "exit 1" on all platforms.
+	exitShell, exitArgs := testutil.ExitCommand(1)
+	goRunArgs = append([]string{"run", "."}, exitShell)
+	goRunArgs = append(goRunArgs, exitArgs...)
+	cmd = exec.Command("go", goRunArgs...)
 	err = cmd.Run()
 	if err == nil {
-		t.Fatal("expected non-zero exit code from 'false' command")
+		t.Fatal("expected non-zero exit code from exit command")
 	}
 
 	// Test usage message.

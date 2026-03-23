@@ -46,9 +46,11 @@ const (
 
 // NetAPI error codes
 const (
-	nerrSuccess      = 0
-	nerrGroupExists  = 2223
-	nerrUserExists   = 2224
+	nerrSuccess       = 0
+	nerrGroupNotFound = 2220
+	nerrGroupExists   = 2223
+	nerrUserNotFound  = 2221
+	nerrUserExists    = 2224
 )
 
 // Win32 error codes for local group operations.
@@ -229,7 +231,7 @@ func netUserDel(serverName *uint16, username *uint16) error {
 		uintptr(unsafe.Pointer(username)),
 	)
 	if r1 != nerrSuccess {
-		return fmt.Errorf("NetUserDel failed with code %d", r1)
+		return &netAPIError{Code: uint32(r1), API: "NetUserDel"}
 	}
 	return nil
 }
@@ -297,7 +299,7 @@ func netLocalGroupDel(serverName *uint16, groupName *uint16) error {
 		uintptr(unsafe.Pointer(groupName)),
 	)
 	if r1 != nerrSuccess {
-		return fmt.Errorf("NetLocalGroupDel failed with code %d", r1)
+		return &netAPIError{Code: uint32(r1), API: "NetLocalGroupDel"}
 	}
 	return nil
 }

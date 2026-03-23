@@ -49,8 +49,10 @@ jobs:
     # Windows Defender real-time scanning can lock Go build-cache .a files,
     # causing intermittent "Access is denied" errors. Each step that invokes
     # the Go toolchain gets its own GOCACHE to avoid cross-step conflicts,
-    # and non-authoritative steps use continue-on-error. The "Windows
-    # sandbox tests (verbose)" step is the authoritative Windows test gate.
+    # and non-authoritative steps use continue-on-error. GOMODCACHE is set
+    # per step to prevent sandbox tests (which modify ACLs) from corrupting
+    # the module cache. The "Windows sandbox tests (verbose)" step is the
+    # authoritative Windows test gate.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,6 +65,7 @@ jobs:
         shell: cmd
         env:
           GOCACHE: ${{ runner.temp }}\go-build-cache
+          GOMODCACHE: ${{ runner.temp }}\go-mod-cache
         continue-on-error: true
         run: go build ./...
 
@@ -70,6 +73,7 @@ jobs:
         shell: cmd
         env:
           GOCACHE: ${{ runner.temp }}\go-vet-cache
+          GOMODCACHE: ${{ runner.temp }}\go-mod-cache
         continue-on-error: true
         run: go vet ./...
 
@@ -77,6 +81,7 @@ jobs:
         shell: cmd
         env:
           GOCACHE: ${{ runner.temp }}\go-test-cache
+          GOMODCACHE: ${{ runner.temp }}\go-mod-cache
         # Best-effort: Windows Defender and cache locking can cause
         # intermittent "Access is denied" errors on CI even with a
         # separate GOCACHE. The verbose sandbox test below is the
@@ -85,33 +90,63 @@ jobs:
         run: go test -short -count=1 ./...
 
       # Run Windows sandbox package tests with verbose output for detailed diagnostics
+      # Reset temp dir ACLs first — the previous Test step may have modified them
+      # via sandbox user creation/deletion.
+      - name: Reset temp dir ACLs
+        shell: cmd
+        continue-on-error: true
+        run: icacls %TEMP% /reset /T /Q
+
       - name: Windows sandbox tests (verbose)
         shell: cmd
         env:
           GOCACHE: ${{ runner.temp }}\go-sandbox-test-cache
-        run: go test -v -short -count=1 ./platform/windows/...
+          GOMODCACHE: ${{ runner.temp }}\go-mod-cache
+          GOTMPDIR: ${{ runner.temp }}\go-sandbox-tmp
+        run: |
+          mkdir "%GOTMPDIR%" 2>nul
+          go test -v -short -count=1 ./platform/windows/...
 
       # Run E2E sandbox tests separately as best-effort (requires restricted tokens)
       - name: Windows sandbox E2E (best-effort)
         shell: cmd
+        env:
+          GOCACHE: ${{ runner.temp }}\go-e2e-cache
+          GOMODCACHE: ${{ runner.temp }}\go-mod-cache
         continue-on-error: true
         run: go test -v -run "TestSandbox_E2E" -count=1 ./platform/windows/...
 
       # Cross-compile check: ensure Windows runner can build for other platforms
-      # Run after tests to avoid Go build cache conflicts on Windows
+      # Run after tests to avoid Go build cache conflicts on Windows.
+      # Reset temp dir ACLs — sandbox tests may have modified them.
+      - name: Reset temp dir ACLs (post-test)
+        shell: cmd
+        continue-on-error: true
+        run: icacls "%TEMP%" /reset /T /Q
+
       - name: Cross-compile (linux/amd64)
         shell: cmd
         env:
           GOOS: linux
           GOARCH: amd64
-        run: go build ./...
+          GOCACHE: ${{ runner.temp }}\go-xcompile-cache
+          GOMODCACHE: ${{ runner.temp }}\go-mod-cache
+          GOTMPDIR: ${{ runner.temp }}\go-xcompile-tmp
+        run: |
+          mkdir "%GOTMPDIR%" 2>nul
+          go build ./...
 
       - name: Cross-compile (darwin/arm64)
         shell: cmd
         env:
           GOOS: darwin
           GOARCH: arm64
-        run: go build ./...
+          GOCACHE: ${{ runner.temp }}\go-xcompile-cache
+          GOMODCACHE: ${{ runner.temp }}\go-mod-cache
+          GOTMPDIR: ${{ runner.temp }}\go-xcompile-tmp
+        run: |
+          mkdir "%GOTMPDIR%" 2>nul
+          go build ./...
 
   lint:
     runs-on: ubuntu-latest

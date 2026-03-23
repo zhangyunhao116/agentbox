@@ -61,12 +61,13 @@ func TestNewManagerValid(t *testing.T) {
 }
 
 func TestNewManagerNilConfig(t *testing.T) {
-	_, err := newManager(nil)
-	if err == nil {
-		t.Fatal("newManager(nil) should return error")
+	mgr, err := newManager(nil)
+	if err != nil {
+		t.Fatalf("newManager(nil) should use DefaultConfig, got error: %v", err)
 	}
-	if !errors.Is(err, ErrConfigInvalid) {
-		t.Errorf("error should wrap ErrConfigInvalid, got: %v", err)
+	defer mgr.Cleanup(context.Background())
+	if mgr == nil {
+		t.Fatal("newManager(nil) returned nil manager")
 	}
 }
 
@@ -122,10 +123,8 @@ func TestNewManagerDefaultsFilled(t *testing.T) {
 }
 
 // TestNewManagerDefaultShellFill verifies that newManager fills in the
-// default shell (/bin/sh) when Shell is empty. This only works on Unix
-// where /bin/sh exists.
+// platform-appropriate default shell when Shell is empty.
 func TestNewManagerDefaultShellFill(t *testing.T) {
-	testutil.SkipIfWindows(t, "defaultShell is /bin/sh which does not exist on Windows")
 	cfg := newTestConfig(t)
 	cfg.Shell = ""
 
@@ -136,8 +135,9 @@ func TestNewManagerDefaultShellFill(t *testing.T) {
 	defer mgr.Cleanup(context.Background())
 
 	m := mgr.(*manager)
-	if m.cfg.Shell != defaultShell {
-		t.Errorf("Shell = %q, want %q", m.cfg.Shell, defaultShell)
+	want := defaultShellPath()
+	if m.cfg.Shell != want {
+		t.Errorf("Shell = %q, want %q", m.cfg.Shell, want)
 	}
 }
 

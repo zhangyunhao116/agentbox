@@ -19,6 +19,7 @@ type nopManager struct {
 	closed           bool
 	classifier       Classifier
 	approvalCb       ApprovalCallback
+	approvalCache    ApprovalCache
 	sessionApprovals map[string]struct{}
 }
 
@@ -39,15 +40,18 @@ func NewNopManager() Manager {
 func newNopManagerWithConfig(cfg *Config) Manager {
 	cl := DefaultClassifier()
 	var cb ApprovalCallback
+	var ac ApprovalCache
 	if cfg != nil {
 		if cfg.Classifier != nil {
 			cl = cfg.Classifier
 		}
 		cb = cfg.ApprovalCallback
+		ac = cfg.ApprovalCache
 	}
 	return &nopManager{
 		classifier:       cl,
 		approvalCb:       cb,
+		approvalCache:    ac,
 		sessionApprovals: make(map[string]struct{}),
 	}
 }
@@ -74,13 +78,11 @@ func (n *nopManager) Wrap(ctx context.Context, cmd *exec.Cmd, opts ...Option) er
 
 	// Reject commands with empty Args to prevent unclassified execution.
 	if len(cmd.Args) == 0 {
-		return fmt.Errorf("%w: cmd.Args must not be empty", ErrNilCommand)
+		return ErrEmptyArgs
 	}
 
 	// Classify the command from cmd.Args.
-	if co.classifier != nil {
-		cl = co.classifier
-	}
+	cl = resolveClassifier(cl, co)
 	var result ClassifyResult
 	if len(cmd.Args) > 1 {
 		result = cl.ClassifyArgs(cmd.Args[0], cmd.Args[1:])
@@ -120,19 +122,17 @@ func (n *nopManager) Exec(ctx context.Context, command string, opts ...Option) (
 	}
 
 	// Classify the command.
-	if co.classifier != nil {
-		cl = co.classifier
-	}
+	cl = resolveClassifier(cl, co)
 	clResult := cl.Classify(command)
 	if err := n.handleDecision(ctx, clResult, command); err != nil {
 		return nil, err
 	}
 
-	shell := defaultShell
+	shell := defaultShellPath()
 	if co.shell != "" {
 		shell = co.shell
 	}
-	cmd := exec.CommandContext(ctx, shell, "-c", command) //nolint:gosec // command is user-provided and classified before execution
+	cmd := exec.CommandContext(ctx, shell, defaultShellFlag(), command) //nolint:gosec // command is user-provided and classified before execution
 
 	// Apply per-call working directory.
 	if co.workingDir != "" {
@@ -148,6 +148,10 @@ func (n *nopManager) Exec(ctx context.Context, command string, opts ...Option) (
 }
 
 func (n *nopManager) ExecArgs(ctx context.Context, name string, args []string, opts ...Option) (*ExecResult, error) {
+	if name == "" {
+		return nil, ErrEmptyArgs
+	}
+
 	n.mu.Lock()
 	if n.closed {
 		n.mu.Unlock()
@@ -166,9 +170,7 @@ func (n *nopManager) ExecArgs(ctx context.Context, name string, args []string, o
 	}
 
 	// Classify the command.
-	if co.classifier != nil {
-		cl = co.classifier
-	}
+	cl = resolveClassifier(cl, co)
 	clResult := cl.ClassifyArgs(name, args)
 	command := buildCommandKey(name, args)
 	if err := n.handleDecision(ctx, clResult, command); err != nil {
@@ -210,9 +212,20 @@ func (n *nopManager) handleDecision(ctx context.Context, result ClassifyResult, 
 		n.mu.Lock()
 		_, cached := n.sessionApprovals[normalizedCmd]
 		cb := n.approvalCb
+		ac := n.approvalCache
 		n.mu.Unlock()
 		if cached {
 			return nil
+		}
+
+		// Check user-provided approval cache (e.g., MemoryApprovalCache).
+		if ac != nil {
+			if d, ok := ac.Get(normalizedCmd); ok {
+				if d == Escalated {
+					return &EscalatedCommandError{Command: command, Reason: "denied by cached decision"}
+				}
+				return nil
+			}
 		}
 
 		if cb == nil {
@@ -222,19 +235,28 @@ func (n *nopManager) handleDecision(ctx context.Context, result ClassifyResult, 
 			Command:  command,
 			Reason:   result.Reason,
 			Decision: result.Decision,
+			Rule:     result.Rule,
 		})
 		if err != nil {
 			return fmt.Errorf("%w: %w", &EscalatedCommandError{Command: command, Reason: result.Reason}, err)
 		}
 		switch decision {
 		case Approve:
-			// fall through to return nil
+			if ac != nil {
+				ac.Set(normalizedCmd, Allow)
+			}
 		case ApproveSession:
 			n.mu.Lock()
 			n.sessionApprovals[normalizedCmd] = struct{}{}
 			n.mu.Unlock()
+			if ac != nil {
+				ac.Set(normalizedCmd, Allow)
+			}
 		default:
 			// Treat unknown/unset decisions as deny for safety.
+			if ac != nil {
+				ac.Set(normalizedCmd, Escalated)
+			}
 			return &EscalatedCommandError{Command: command, Reason: "denied by user"}
 		}
 		return nil
@@ -252,6 +274,11 @@ func (n *nopManager) Check(_ context.Context, command string) (ClassifyResult, e
 	cl := n.classifier
 	n.mu.Unlock()
 	return cl.Classify(command), nil
+}
+
+// Close implements io.Closer. It calls Cleanup with a background context.
+func (n *nopManager) Close() error {
+	return n.Cleanup(context.Background())
 }
 
 func (n *nopManager) Cleanup(_ context.Context) error {
@@ -294,6 +321,9 @@ func (n *nopManager) UpdateConfig(cfg *Config) error {
 
 	// Update the approval callback.
 	n.approvalCb = cfg.ApprovalCallback
+
+	// Update the approval cache.
+	n.approvalCache = cfg.ApprovalCache
 
 	return nil
 }
