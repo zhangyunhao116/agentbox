@@ -10,8 +10,8 @@ import (
 
 func TestBuiltinRuleNamesCount(t *testing.T) {
 	names := BuiltinRuleNames()
-	// There are 44 built-in rules: 17 forbidden + 21 escalated + 6 allow.
-	const wantCount = 44
+	// There are 45 built-in rules: 15 forbidden + 24 escalated + 6 allow.
+	const wantCount = 45
 	if got := len(names); got != wantCount {
 		t.Errorf("BuiltinRuleNames() returned %d names, want %d", got, wantCount)
 	}
@@ -60,24 +60,24 @@ func TestBuiltinRuleNamesMatchDefaultRules(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOverrideEscalatedToAllow(t *testing.T) {
-	// docker run ubuntu is normally Escalated by the docker-runtime rule.
+	// docker run ubuntu is normally Escalated by the docker-container rule.
 	base := DefaultClassifier()
 	result := base.Classify("docker run ubuntu")
 	if result.Decision != Escalated {
 		t.Fatalf("precondition: expected Escalated for 'docker run ubuntu', got %v", result.Decision)
 	}
 
-	// Override docker-runtime → Allow.
+	// Override docker-container → Allow.
 	oc := &overrideClassifier{
 		base:      base,
-		overrides: map[RuleName]Decision{RuleDockerRuntime: Allow},
+		overrides: map[RuleName]Decision{RuleDockerContainer: Allow},
 	}
 	result = oc.Classify("docker run ubuntu")
 	if result.Decision != Allow {
 		t.Errorf("expected Allow after override, got %v", result.Decision)
 	}
-	if result.Rule != RuleDockerRuntime {
-		t.Errorf("expected Rule=%q, got %q", RuleDockerRuntime, result.Rule)
+	if result.Rule != RuleDockerContainer {
+		t.Errorf("expected Rule=%q, got %q", RuleDockerContainer, result.Rule)
 	}
 }
 
@@ -163,11 +163,11 @@ func TestOverrideUnknownRuleIgnored(t *testing.T) {
 }
 
 func TestOverrideDoesNotAffectOtherRules(t *testing.T) {
-	// Override docker-runtime but NOT ssh-command.
+	// Override docker-container but NOT ssh-command.
 	base := DefaultClassifier()
 	oc := &overrideClassifier{
 		base:      base,
-		overrides: map[RuleName]Decision{RuleDockerRuntime: Allow},
+		overrides: map[RuleName]Decision{RuleDockerContainer: Allow},
 	}
 
 	// docker run → overridden to Allow.
@@ -188,9 +188,9 @@ func TestOverrideMultiple(t *testing.T) {
 	oc := &overrideClassifier{
 		base: base,
 		overrides: map[RuleName]Decision{
-			RuleDockerRuntime: Allow,
-			RuleSSHCommand:    Allow,
-			RuleForkBomb:      Sandboxed,
+			RuleDockerContainer: Allow,
+			RuleSSHCommand:      Allow,
+			RuleForkBomb:        Sandboxed,
 		},
 	}
 
@@ -218,7 +218,7 @@ func TestOverrideClassifyArgs(t *testing.T) {
 	base := DefaultClassifier()
 	oc := &overrideClassifier{
 		base:      base,
-		overrides: map[RuleName]Decision{RuleDockerRuntime: Allow},
+		overrides: map[RuleName]Decision{RuleDockerContainer: Allow},
 	}
 
 	result := oc.ClassifyArgs("docker", []string{"run", "ubuntu"})
@@ -235,7 +235,7 @@ func TestWithRuleOverridesIntegration(t *testing.T) {
 	// Simulate what happens when WithRuleOverrides is used with resolveClassifier.
 	co := &callOptions{}
 	WithRuleOverrides(RuleOverride{
-		Rule:     RuleDockerRuntime,
+		Rule:     RuleDockerContainer,
 		Decision: Allow,
 	})(co)
 
@@ -311,11 +311,11 @@ func TestWithRuleOverridesLastWins(t *testing.T) {
 	// the last override wins (map semantics).
 	co := &callOptions{}
 	WithRuleOverrides(RuleOverride{
-		Rule:     RuleDockerRuntime,
+		Rule:     RuleDockerContainer,
 		Decision: Forbidden,
 	})(co)
 	WithRuleOverrides(RuleOverride{
-		Rule:     RuleDockerRuntime,
+		Rule:     RuleDockerContainer,
 		Decision: Allow,
 	})(co)
 
@@ -345,8 +345,8 @@ func TestWithRuleOverridesEmpty(t *testing.T) {
 func TestRuleNameStringConversion(t *testing.T) {
 	// Verify that RuleName → string conversion works for ClassifyResult.Rule.
 	var r ClassifyResult
-	r.Rule = RuleDockerRuntime
-	if r.Rule != "docker-runtime" {
-		t.Errorf("expected 'docker-runtime', got %q", r.Rule)
+	r.Rule = RuleDockerContainer
+	if r.Rule != "docker-container" {
+		t.Errorf("expected 'docker-container', got %q", r.Rule)
 	}
 }

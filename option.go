@@ -253,11 +253,11 @@ func WithProtectedPaths(paths ...ProtectedPath) Option {
 // paths (WithProtectedPaths) → rule overrides (WithRuleOverrides) → built-in
 // rules. The first non-Sandboxed result wins.
 //
-// Example — allow docker runtime commands without approval:
+// Example — allow docker container commands without approval:
 //
 //	mgr.Exec(ctx, "docker run ubuntu",
 //	    agentbox.WithRuleOverrides(agentbox.RuleOverride{
-//	        Rule:     agentbox.RuleDockerRuntime,
+//	        Rule:     agentbox.RuleDockerContainer,
 //	        Decision: agentbox.Allow,
 //	    }),
 //	)

@@ -59,7 +59,7 @@ func ExampleWithCustomRules() {
 }
 
 // ExampleWithRuleOverrides shows how to change the decision of a specific
-// built-in rule using WithRuleOverrides. Here the docker-runtime rule is
+// built-in rule using WithRuleOverrides. Here the docker-container rule is
 // relaxed from Escalated to Allow so docker commands execute without
 // approval prompts.
 func ExampleWithRuleOverrides() {
@@ -71,10 +71,10 @@ func ExampleWithRuleOverrides() {
 	}
 	defer mgr.Close()
 
-	// Override docker-runtime from Escalated → Allow for this call only.
+	// Override docker-container from Escalated → Allow for this call only.
 	_, _ = mgr.Exec(context.Background(), "docker run --rm ubuntu echo hello",
 		agentbox.WithRuleOverrides(agentbox.RuleOverride{
-			Rule:     agentbox.RuleDockerRuntime,
+			Rule:     agentbox.RuleDockerContainer,
 			Decision: agentbox.Allow,
 		}),
 	)
@@ -88,6 +88,6 @@ func ExampleBuiltinRuleNames() {
 	fmt.Println("total rules:", len(names))
 	fmt.Println("first rule:", names[0])
 	// Output:
-	// total rules: 44
+	// total rules: 45
 	// first rule: fork-bomb
 }

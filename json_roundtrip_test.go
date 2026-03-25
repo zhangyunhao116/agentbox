@@ -386,7 +386,7 @@ func TestClassifyResultJSONOmitsEmpty(t *testing.T) {
 
 func TestRuleOverrideJSONRoundTrip(t *testing.T) {
 	ro := RuleOverride{
-		Rule:     RuleDockerRuntime,
+		Rule:     RuleDockerContainer,
 		Decision: Allow,
 	}
 	data, err := json.Marshal(ro)
@@ -508,7 +508,7 @@ func TestApprovalRequestRuleJSONRoundTrip(t *testing.T) {
 		Command:  "docker run ubuntu",
 		Reason:   "docker runtime",
 		Decision: Escalated,
-		Rule:     RuleDockerRuntime,
+		Rule:     RuleDockerContainer,
 	}
 	data, err := json.Marshal(ar)
 	if err != nil {

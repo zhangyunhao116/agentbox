@@ -240,6 +240,41 @@ func hasStandaloneCommand(s, cmd string) bool {
 	return false
 }
 
+// isRedirectTerminator reports whether c is a shell metacharacter that
+// terminates a redirect target path. Redirect targets end at whitespace,
+// newlines, and shell operators like ; & | ) < >.
+func isRedirectTerminator(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', ';', '&', '|', ')', '<', '>':
+		return true
+	}
+	return false
+}
+
+// isCommandSeparator reports whether a shell token is a command separator
+// (&&, ||, ;, |) or contains an embedded separator character. When
+// strings.Fields splits a raw command, semicolons without surrounding spaces
+// remain attached to the preceding token (e.g. "~/x;" from "rm -rf ~/x; ls").
+// Detecting these embedded separators prevents rules from scanning into the
+// next command.
+func isCommandSeparator(token string) bool {
+	switch token {
+	case "&&", "||", ";", "|":
+		return true
+	}
+	// Check for embedded shell metacharacters that signal a command boundary.
+	for i := 0; i < len(token); i++ {
+		switch token[i] {
+		case ';', '|':
+			return true
+		case '&':
+			// A single & (background) is also a command boundary.
+			return true
+		}
+	}
+	return false
+}
+
 // isWordChar reports whether b is an ASCII letter, digit, underscore, or
 // hyphen. Hyphens are included so that flag-like tokens such as "--nc" are
 // treated as a single word and do not produce a false word boundary.
@@ -252,7 +287,7 @@ func isWordChar(b byte) bool {
 // quotes, double quotes, $(...) subshells, or backticks are ignored. Pipes are
 // intentionally excluded because they chain output rather than running
 // independent commands; dangerous pipe targets are caught by dedicated rules
-// (curlPipeShellRule, base64PipeShellRule). Allow rules use this to prevent
+// (pipeToShellRule). Allow rules use this to prevent
 // "which python && rm -rf /" from matching as safe.
 func isSimpleCommand(command string) bool {
 	var ps pipeScanner

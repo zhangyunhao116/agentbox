@@ -17,6 +17,12 @@ const (
 	homeEnvVar = "$HOME"
 	// homeBraceEnvVar is the ${HOME} environment variable reference used in rule matching.
 	homeBraceEnvVar = "${HOME}"
+	// flagHelp is the long-form --help flag used in rule matching.
+	flagHelp = "--help"
+	// flagVersion is the long-form --version flag used in rule matching.
+	flagVersion = "--version"
+	// flagList is the long-form --list flag used in rule matching.
+	flagList = "--list"
 	// flagRecursive is the long-form --recursive flag used in rule matching.
 	flagRecursive = "--recursive"
 	// cmdPython is the interpreter name used to exempt safe python pipe targets.
@@ -33,6 +39,8 @@ const (
 	cmdCurl = "curl"
 	// cmdWget is the wget command name used in download and pipe rules.
 	cmdWget = "wget"
+	// cmdRedisCLI is the redis-cli command name used in database rules.
+	cmdRedisCLI = "redis-cli"
 	// subStash is the git stash subcommand name.
 	subStash = "stash"
 )
@@ -199,11 +207,9 @@ func forbiddenRules() []rule {
 		recursiveDeleteRootRule(),
 		diskWipeRule(),
 		reverseShellRule(),
-		chmodRecursiveRootRule(),
-		chownRecursiveRootRule(),
+		recursivePermRootRule(),
 		filesystemFormatRule(),
-		curlPipeShellRule(),
-		base64PipeShellRule(),
+		pipeToShellRule(),
 		ifsBypassRule(),
 		shutdownRebootRule(),
 		kernelModuleRule(),
@@ -242,7 +248,9 @@ func escalatedRules() []rule {
 		userManagementRule(),
 		globalInstallRule(),
 		dockerBuildRule(),
-		dockerRuntimeRule(),
+		dockerContainerRule(),
+		dockerComposeRule(),
+		kubernetesRule(),
 		systemPackageInstallRule(),
 		processKillRule(),
 		gitWriteRule(),
@@ -254,6 +262,7 @@ func escalatedRules() []rule {
 		filePermissionRule(),
 		firewallManagementRule(),
 		networkScanRule(),
+		databaseBackupRule(),
 		databaseClientRule(),
 		gitStashDropRule(),
 		evalExecRule(),

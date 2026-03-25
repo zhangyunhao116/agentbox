@@ -356,3 +356,31 @@ func TestContainsFlag(t *testing.T) {
 		})
 	}
 }
+
+func TestIsRedirectTerminator(t *testing.T) {
+	terminators := []byte{' ', '\t', '\n', ';', '&', '|', ')', '<', '>'}
+	for _, c := range terminators {
+		if !isRedirectTerminator(c) {
+			t.Errorf("isRedirectTerminator(%q) = false, want true", c)
+		}
+	}
+	nonTerminators := []byte{'/', 'a', '0', '.', '-', '_'}
+	for _, c := range nonTerminators {
+		if isRedirectTerminator(c) {
+			t.Errorf("isRedirectTerminator(%q) = true, want false", c)
+		}
+	}
+}
+
+func TestIsCommandSeparator(t *testing.T) {
+	for _, tok := range []string{"&&", "||", ";", "|", "~/x;", "path|more", "bg&"} {
+		if !isCommandSeparator(tok) {
+			t.Errorf("isCommandSeparator(%q) = false, want true", tok)
+		}
+	}
+	for _, tok := range []string{"--", "-rf", "/", "rm", "", ">"} {
+		if isCommandSeparator(tok) {
+			t.Errorf("isCommandSeparator(%q) = true, want false", tok)
+		}
+	}
+}

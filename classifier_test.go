@@ -355,7 +355,7 @@ func TestClassifierReverseShellArgs(t *testing.T) {
 }
 
 func TestClassifierCurlPipeShellArgs(t *testing.T) {
-	// curl-pipe-shell now has MatchArgs.
+	// pipe-to-shell now has MatchArgs.
 	c := DefaultClassifier()
 	// This won't have a pipe in args, so it won't match.
 	// The pipe is a shell construct, not an argument.

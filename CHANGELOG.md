@@ -9,15 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **api**: `NewManager(nil)` now uses `DefaultConfig()` instead of returning an error, matching the convenience functions (`Exec`, `Wrap`, etc.)
-- **api**: `FallbackPolicy` and `NetworkMode` now implement `encoding.TextMarshaler`/`TextUnmarshaler` — JSON serialization produces human-readable strings (`"strict"`, `"warn"`, `"filtered"`, `"blocked"`, `"allowed"`) instead of raw integers; consistent with `Decision` and `ApprovalDecision`
-- **api**: All four enum `MarshalText` methods (`Decision`, `FallbackPolicy`, `NetworkMode`, `ApprovalDecision`) now return an error for invalid/unknown values instead of silently marshaling `"unknown"`
-- **api**: New sentinel error `ErrEmptyArgs` for empty command args — `Wrap()` with empty `cmd.Args` and `ExecArgs()` with empty `name` now return `ErrEmptyArgs` instead of `ErrNilCommand`, allowing callers to distinguish nil-command from empty-args cases via `errors.Is`
+- **classifier**: Merged `chmod-recursive-root` + `chown-recursive-root` into a single `recursive-perm-root` rule — both chmod and chown recursive permission changes on dangerous targets are now detected by one rule
+- **classifier**: Merged `curl-pipe-shell` + `base64-pipe-shell` into a single `pipe-to-shell` rule — all piping-to-shell patterns (curl/wget and base64-decoded content) are now detected by one rule
+- **classifier**: Split `docker-runtime` into three focused rules: `docker-container` (container lifecycle), `docker-compose` (compose commands), and `kubernetes` (kubectl operations)
+- **classifier**: Split backup/restore commands out of `database-client` into a new `database-backup` rule — `pg_dump`, `pg_restore`, `mysqldump`, `mongodump`, `mongorestore`, `mongoexport`, `mongoimport`, and `redis-cli SAVE/BGSAVE` are now classified separately from interactive client connections
+- **classifier**: Old rule name constants (`RuleChmodRecursiveRoot`, `RuleChownRecursiveRoot`, `RuleCurlPipeShell`, `RuleBase64PipeShell`, `RuleDockerRuntime`) removed — no backward compatibility aliases
+- **classifier**: `ssh-command` rule now excludes `ssh -V` (version check) — uppercase `-V` is a version flag, lowercase `-v` (verbose) is still escalated
+- **classifier**: `network-scan` rule now excludes `--version`, `--help`, `-V`, `-h` flags with redirect/pipe stripping — `nmap --version 2>&1 | head -3` is no longer escalated
+- **classifier**: `firewall-management` rule now handles piped/redirected commands — `iptables -L -n | head -20` and `iptables --help 2>&1 | head -5` are no longer escalated
+- **classifier**: `database-client` rule now handles redirected commands — `redis-cli ping 2>&1` health check is no longer escalated
+- **classifier**: `crontab-at` rule now handles redirected/piped commands — `crontab -l 2>/dev/null | head -20` is no longer escalated
+- **classifier**: `user-management` rule now excludes `passwd -S` (password status check) as read-only
+- **classifier**: `output-redirect-system` rule now excludes safe `/dev/` targets (`/dev/null`, `/dev/zero`, `/dev/tty`, `/dev/stdout`, `/dev/stderr`, `/dev/stdin`, `/dev/random`, `/dev/urandom`, `/dev/fd/*`, `/dev/pts/*`) — eliminates massive false positives from `2>/dev/null` patterns
+- **classifier**: `output-redirect-system` rule now correctly terminates redirect target extraction at shell metacharacters (`;`, `&`, `|`, `)`, `\n`) — `cmd 2>/dev/null; next` no longer falsely flags `/dev/null;` as a system path
+- **classifier**: `filesystem-format` rule now allows `--help`, `-h`, and `--version` flags for all commands (mkfs, shred, fdisk, parted)
+- **classifier**: `partition-management` rule now allows `--help`, `-h`, and `--version` flags for gdisk, cfdisk, sfdisk
+- **classifier**: `destructive-xargs` rule now correctly identifies the xargs target command by skipping xargs flags — `docker ps | xargs docker rm` is no longer falsely flagged (only actual `xargs rm` is forbidden)
+- **classifier**: `shutdown-reboot` rule now excludes `shutdown /a` (Windows abort shutdown) — aborting a shutdown is safe
+- **classifier**: `crontab-at` rule now excludes `crontab -l` (list) as a read-only operation
+- **classifier**: `service-management` rule now excludes read-only subcommands: `systemctl status/is-active/is-enabled/is-failed/show/list-*`, `launchctl list/print`, `sc query`, `service <name> status`
+- **classifier**: `firewall-management` rule now excludes read-only listing: `iptables -L/-S`, `ufw status`, `nft list`, `firewall-cmd --list-all/--state/--get-active-zones`
+- **classifier**: `process-kill` rule now excludes `kill -l` (list signals) as a read-only operation
+- **classifier**: `user-management` rule now excludes `--help`, `-h`, `--version` flags
+- **classifier**: `database-client` rule now excludes `--help`, `--version`, `-V` flags and `redis-cli ping` health check
+
+### Fixed
+
+- **classifier**: `reverse-shell` rule — `nc -zv` connectivity tests no longer false-positive; the `-z` flag (zero-I/O scan mode) now suppresses the match even in combined flags like `-zv`/`-zuv`
+- **classifier**: `reverse-shell` rule — flag matching for nc/ncat uses whole-word comparison; `-ErrorAction` no longer matches `-e`, and PowerShell `Get-Command` listing nc/ncat/netcat is excluded
+- **classifier**: `reverse-shell` rule — `ncat -C` (CRLF line endings) no longer false-positives as `-c` (execute); ncat flag detection uses original case
+- **classifier**: `reverse-shell` rule — `/dev/tcp/` and `/dev/udp/` connectivity tests (`echo > /dev/tcp/host/port`, `timeout < /dev/tcp/host/port`) no longer false-positive; only commands with actual reverse-shell indicators (exec, non-standard fd redirects like `>&3`/`0>&1`, `/bin/sh`, bare `>&`) are flagged
+- **classifier**: `reverse-shell` rule — `bash -i >& /dev/tcp/host/port` (bare stdout+stderr redirect) is now correctly detected as a reverse shell
+- **classifier**: `reverse-shell` rule — `0<&1` (stdin from stdout) is now detected as a reverse-shell fd redirect pattern
+- **classifier**: `reverse-shell` rule — fixed index out-of-bounds panic in `hasNonStdFDRedirect` when input ends with `>&` or `<&`
+- **classifier**: `output-redirect-system` rule — `/dev/tcp/`, `/dev/udp/` (bash virtual devices) and `/proc/self/fd/` added as safe redirect targets
+- **classifier**: `isFirewallCmdReadOnly` now requires ALL `--` flags to be in the read-only set — mixed flags like `firewall-cmd --list-all --add-service=http` are correctly escalated instead of bypassing
+- **classifier**: Flag scanning loops in `recursive-delete-root`, `chmod-recursive-root`, and `chown-recursive-root` rules now stop at command separators (`&&`, `||`, `;`, `|`) — prevents flags from a subsequent command being attributed to the first (e.g., `rm / && echo -rf`)
+- **classifier**: Added missing BSD/macOS xargs value flags (`-J`, `-R`, `-S`, `-E`, `-a`, `--arg-file`) to `xargsValFlags` — fixes incorrect target command identification on macOS
+- **classifier**: Removed bare `"version"` from `isDBClientInfoOnly` and `versionHelpFlags` — `sqlite3 version` now correctly triggers escalation instead of being misclassified as a version check (it opens a file named "version")
 
 ### Added
 
+- **example**: `examples/trustlevel9/` — scans a large command dataset and reports which commands would be blocked at Trust Level 9 (all Escalated allowed, only Forbidden blocked)
+- **example**: `examples/ruleanalysis/` — runs all classification rules against a large command dataset and produces a per-rule breakdown report grouped by decision level
+
 - **api**: `ClassifyResult.String()` method — returns human-readable representation (e.g., `"forbidden (reverse-shell: detected pattern)"`)
 - **api**: `ExecResult.String()` method — returns execution summary (e.g., `"exit=0 sandboxed=true duration=42ms stdout=5B stderr=0B"`)
+- **api**: `FallbackPolicy` and `NetworkMode` now implement `encoding.TextMarshaler`/`TextUnmarshaler` — JSON serialization produces human-readable strings (`"strict"`, `"warn"`, `"filtered"`, `"blocked"`, `"allowed"`) instead of raw integers; consistent with `Decision` and `ApprovalDecision`
+- **api**: All four enum `MarshalText` methods (`Decision`, `FallbackPolicy`, `NetworkMode`, `ApprovalDecision`) now return an error for invalid/unknown values instead of silently marshaling `"unknown"`
+- **api**: New sentinel error `ErrEmptyArgs` for empty command args — `Wrap()` with empty `cmd.Args` and `ExecArgs()` with empty `name` now return `ErrEmptyArgs` instead of `ErrNilCommand`, allowing callers to distinguish nil-command from empty-args cases via `errors.Is`
 
 - **api**: `ApprovalRequest.Rule` field (`RuleName`, `json:"rule,omitempty"`) — callbacks now receive the name of the classification rule that triggered escalation
 - **doc**: Godoc example functions — `ExampleNewManager`, `ExampleDefaultClassifier`, `ExampleWithCustomRules`, `ExampleWithRuleOverrides`, `ExampleBuiltinRuleNames`
