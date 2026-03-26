@@ -9,6 +9,67 @@ import (
 	"strings"
 )
 
+// isShellRedirect reports whether tok looks like a shell redirect token
+// (e.g. "2>/dev/null", "2>&1", ">/dev/null", "&>/dev/null", "&>", "1>&2").
+func isShellRedirect(tok string) bool {
+	// Patterns: 2>/dev/null, 2>&1, >/dev/null, &>/dev/null, 1>&2, etc.
+	for i, ch := range tok {
+		if ch == '>' {
+			return true
+		}
+		// Only digits (fd numbers) and '&' may precede '>'.
+		if i == 0 && (ch == '&' || (ch >= '0' && ch <= '9')) {
+			continue
+		}
+		if ch >= '0' && ch <= '9' {
+			continue
+		}
+		return false
+	}
+	return false
+}
+
+// stripFieldsRedirectsAndPipes takes already-split fields (from strings.Fields)
+// and returns only the fields belonging to the first pipe-segment with shell
+// redirect tokens removed. This lets rule helpers examine the core command
+// without being confused by trailing "2>/dev/null", "2>&1", "| head -20", etc.
+//
+// Design note: this intentionally analyzes only the first segment of compound
+// commands. A command like "iptables -L && iptables -A INPUT -j DROP" would
+// have only the first segment ("iptables -L") analyzed for read-only status.
+// This is acceptable because the sandbox (not the classifier) is the primary
+// security boundary — see defense-in-depth design.
+//
+// Examples:
+//
+//	["iptables", "-L", "-n", "|", "head", "-20"]  →  ["iptables", "-L", "-n"]
+//	["redis-cli", "ping", "2>&1"]                  →  ["redis-cli", "ping"]
+//	["crontab", "-l", "2>/dev/null"]                →  ["crontab", "-l"]
+func stripFieldsRedirectsAndPipes(fields []string) []string {
+	out := make([]string, 0, len(fields))
+	skipNext := false
+	for _, f := range fields {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if f == "|" || f == "||" || f == "&&" || f == ";" {
+			break
+		}
+		if isShellRedirect(f) {
+			// When the redirect target is separate (e.g. "2>" "/dev/null"),
+			// skip the next token as well. A glued form like "2>/dev/null"
+			// or "2>&1" is a single token — no extra skip needed.
+			if strings.HasSuffix(f, ">") || strings.HasSuffix(f, ">>") {
+				skipNext = true
+			}
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
 // sudoRule matches commands that use sudo or doas for privilege escalation.
 func sudoRule() rule {
 	return rule{
@@ -264,26 +325,63 @@ func userManagementRule() rule {
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if userCmds[baseCommand(fields[0])] {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "user/group management requires approval",
-					Rule:     "user-management",
-				}, true
+			base := baseCommand(fields[0])
+			if !userCmds[base] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			cleaned := stripFieldsRedirectsAndPipes(fields[1:])
+			// --help, -h, --version are informational only.
+			if escalatedHasInfoFlag(cleaned) {
+				return ClassifyResult{}, false
+			}
+			// passwd -S shows password status — read-only.
+			if base == "passwd" && isPasswdStatusOnly(cleaned) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "user/group management requires approval",
+				Rule:     "user-management",
+			}, true
 		},
-		MatchArgs: func(name string, _ []string) (ClassifyResult, bool) {
-			if userCmds[baseCommand(name)] {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "user/group management requires approval",
-					Rule:     "user-management",
-				}, true
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			base := baseCommand(name)
+			if !userCmds[base] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			if escalatedHasInfoFlag(args) {
+				return ClassifyResult{}, false
+			}
+			if base == "passwd" && isPasswdStatusOnly(args) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "user/group management requires approval",
+				Rule:     "user-management",
+			}, true
 		},
 	}
+}
+
+// isPasswdStatusOnly reports whether the passwd arguments represent a
+// status-only invocation. "passwd -S [user]" only displays the password status
+// and does not modify anything.
+func isPasswdStatusOnly(args []string) bool {
+	hasStatus := false
+	for _, a := range args {
+		switch a {
+		case "-S", "--status":
+			hasStatus = true
+		default:
+			// Unknown flags mean this is not a status-only invocation.
+			if strings.HasPrefix(a, "-") {
+				return false
+			}
+			// Non-flag args (usernames) are acceptable with -S.
+		}
+	}
+	return hasStatus
 }
 
 func globalInstallRule() rule {
@@ -348,7 +446,10 @@ func globalInstallRule() rule {
 	}
 }
 
-func dockerRuntimeRule() rule {
+// dockerContainerRule escalates Docker/Podman container lifecycle commands:
+// run, exec, stop, rm, restart, kill, pause, unpause, and object-level
+// destructive actions (system prune, volume rm, image rm, container rm, etc.).
+func dockerContainerRule() rule {
 	// Subcommands for docker/podman that need escalation.
 	dockerSubs := map[string]bool{
 		"run": true, "exec": true, "stop": true, "rm": true,
@@ -361,21 +462,9 @@ func dockerRuntimeRule() rule {
 		"image":     {"rm": true, "prune": true},
 		"container": {"rm": true, "prune": true},
 	}
-	// docker-compose / docker compose subcommands.
-	composeSubs := map[string]bool{
-		"up": true, "down": true, "restart": true,
-		"rm": true, "stop": true, "kill": true,
-	}
-	// kubectl subcommands.
-	kubectlSubs := map[string]bool{
-		"exec": true, "run": true, "delete": true, "apply": true,
-		"create": true, "edit": true, "patch": true, "scale": true,
-		"rollout": true,
-	}
 
-	const runtimeReason = "container runtime operation requires approval"
-	const k8sReason = "kubernetes operation requires approval"
-	const ruleName = "docker-runtime"
+	const reason = "container runtime operation requires approval"
+	const ruleName = "docker-container"
 
 	matchFields := func(fields []string) (ClassifyResult, bool) {
 		if len(fields) == 0 {
@@ -389,15 +478,8 @@ func dockerRuntimeRule() rule {
 				return ClassifyResult{}, false
 			}
 			sub := fields[1]
-			// docker compose <subcmd>
-			if sub == "compose" && len(fields) >= 3 {
-				if composeSubs[fields[2]] {
-					return ClassifyResult{
-						Decision: Escalated,
-						Reason:   runtimeReason,
-						Rule:     ruleName,
-					}, true
-				}
+			// Skip "docker compose" — handled by docker-compose rule.
+			if sub == "compose" {
 				return ClassifyResult{}, false
 			}
 			// docker <object> <action>
@@ -405,7 +487,7 @@ func dockerRuntimeRule() rule {
 				if actions[fields[2]] {
 					return ClassifyResult{
 						Decision: Escalated,
-						Reason:   runtimeReason,
+						Reason:   reason,
 						Rule:     ruleName,
 					}, true
 				}
@@ -415,7 +497,57 @@ func dockerRuntimeRule() rule {
 			if dockerSubs[sub] {
 				return ClassifyResult{
 					Decision: Escalated,
-					Reason:   runtimeReason,
+					Reason:   reason,
+					Rule:     ruleName,
+				}, true
+			}
+		}
+		return ClassifyResult{}, false
+	}
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			return matchFields(strings.Fields(command))
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			fields := make([]string, 0, 1+len(args))
+			fields = append(fields, name)
+			fields = append(fields, args...)
+			return matchFields(fields)
+		},
+	}
+}
+
+// dockerComposeRule escalates docker-compose / docker compose commands.
+func dockerComposeRule() rule {
+	composeSubs := map[string]bool{
+		"up": true, "down": true, "restart": true,
+		"rm": true, "stop": true, "kill": true,
+	}
+
+	const reason = "docker compose operation requires approval"
+	const ruleName = "docker-compose"
+
+	matchFields := func(fields []string) (ClassifyResult, bool) {
+		if len(fields) == 0 {
+			return ClassifyResult{}, false
+		}
+		base := baseCommand(fields[0])
+
+		switch base {
+		case "docker", "podman":
+			// docker compose <subcmd>
+			if len(fields) < 3 {
+				return ClassifyResult{}, false
+			}
+			if fields[1] != "compose" {
+				return ClassifyResult{}, false
+			}
+			if composeSubs[fields[2]] {
+				return ClassifyResult{
+					Decision: Escalated,
+					Reason:   reason,
 					Rule:     ruleName,
 				}, true
 			}
@@ -427,19 +559,53 @@ func dockerRuntimeRule() rule {
 			if composeSubs[fields[1]] {
 				return ClassifyResult{
 					Decision: Escalated,
-					Reason:   runtimeReason,
+					Reason:   reason,
 					Rule:     ruleName,
 				}, true
 			}
+		}
+		return ClassifyResult{}, false
+	}
 
-		case "kubectl":
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			return matchFields(strings.Fields(command))
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			fields := make([]string, 0, 1+len(args))
+			fields = append(fields, name)
+			fields = append(fields, args...)
+			return matchFields(fields)
+		},
+	}
+}
+
+// kubernetesRule escalates kubectl operations that modify cluster state.
+func kubernetesRule() rule {
+	kubectlSubs := map[string]bool{
+		"exec": true, "run": true, "delete": true, "apply": true,
+		"create": true, "edit": true, "patch": true, "scale": true,
+		"rollout": true,
+	}
+
+	const reason = "kubernetes operation requires approval"
+	const ruleName = "kubernetes"
+
+	matchFields := func(fields []string) (ClassifyResult, bool) {
+		if len(fields) == 0 {
+			return ClassifyResult{}, false
+		}
+		base := baseCommand(fields[0])
+
+		if base == "kubectl" {
 			if len(fields) < 2 {
 				return ClassifyResult{}, false
 			}
 			if kubectlSubs[fields[1]] {
 				return ClassifyResult{
 					Decision: Escalated,
-					Reason:   k8sReason,
+					Reason:   reason,
 					Rule:     ruleName,
 				}, true
 			}
@@ -541,27 +707,48 @@ func processKillRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if killCmds[base] {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "process termination requires approval",
-					Rule:     "process-kill",
-				}, true
+			if !killCmds[base] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			// "kill -l" / "kill --list" lists signal names — read-only.
+			if base == "kill" && isKillListOnly(fields[1:]) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "process termination requires approval",
+				Rule:     "process-kill",
+			}, true
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if killCmds[base] {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "process termination requires approval",
-					Rule:     "process-kill",
-				}, true
+			if !killCmds[base] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			if base == "kill" && isKillListOnly(args) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "process termination requires approval",
+				Rule:     "process-kill",
+			}, true
 		},
 	}
+}
+
+// isKillListOnly reports whether args represent "kill -l" or "kill --list",
+// optionally followed by a signal name. These invocations only print signal
+// names and do not terminate any process.
+func isKillListOnly(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if args[0] == "-l" || args[0] == flagList {
+		// "kill -l" or "kill -l TERM" — both are read-only.
+		return true
+	}
+	return false
 }
 
 // gitWriteRule escalates git remote and destructive operations.
@@ -627,6 +814,10 @@ func sshCommandRule() rule {
 				return ClassifyResult{}, false
 			}
 			if baseCommand(fields[0]) == "ssh" {
+				// ssh -V (uppercase) is a version check — safe, not a connection.
+				if isSSHVersionOnly(stripFieldsRedirectsAndPipes(fields[1:])) {
+					return ClassifyResult{}, false
+				}
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "SSH remote access requires approval",
@@ -635,8 +826,11 @@ func sshCommandRule() rule {
 			}
 			return ClassifyResult{}, false
 		},
-		MatchArgs: func(name string, _ []string) (ClassifyResult, bool) {
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			if baseCommand(name) == "ssh" {
+				if isSSHVersionOnly(args) {
+					return ClassifyResult{}, false
+				}
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "SSH remote access requires approval",
@@ -646,6 +840,18 @@ func sshCommandRule() rule {
 			return ClassifyResult{}, false
 		},
 	}
+}
+
+// isSSHVersionOnly reports whether the SSH arguments represent a version check
+// only. "ssh -V" (uppercase) prints the version; -v (lowercase) enables verbose
+// mode for connections and should still be escalated.
+func isSSHVersionOnly(args []string) bool {
+	for _, a := range args {
+		if a == "-V" {
+			return true
+		}
+	}
+	return false
 }
 
 // fileTransferRule escalates file transfer commands: scp, rsync, sftp, ftp.
@@ -777,21 +983,42 @@ func downloadToFileRule() rule {
 // serviceManagementRule escalates service management commands: systemctl,
 // service, launchctl, and sc/sc.exe (Windows, only with recognized subcommands).
 func serviceManagementRule() rule {
-	// Direct service management commands that always escalate.
+	// Direct service management commands.
 	directCmds := map[string]bool{
 		"systemctl": true,
 		"service":   true,
 		"launchctl": true,
 	}
 
-	// Windows sc subcommands that indicate service management.
+	// Read-only systemctl subcommands that should not be escalated.
+	systemctlReadOnly := map[string]bool{
+		"status":              true,
+		"is-active":           true,
+		"is-enabled":          true,
+		"is-failed":           true,
+		"show":                true,
+		"list-units":          true,
+		"list-unit-files":     true,
+		"list-timers":         true,
+		"list-sockets":        true,
+		"list-dependencies":   true,
+		"cat":                 true,
+	}
+
+	// Read-only launchctl subcommands.
+	launchctlReadOnly := map[string]bool{
+		"list":  true,
+		"print": true,
+	}
+
+	// Windows sc subcommands that indicate service management (write ops).
+	// "query" is excluded — it is read-only.
 	scSubs := map[string]bool{
 		"start":  true,
 		"stop":   true,
 		"create": true,
 		"delete": true,
 		"config": true,
-		"query":  true,
 	}
 
 	return rule{
@@ -803,6 +1030,17 @@ func serviceManagementRule() rule {
 			}
 			base := baseCommand(fields[0])
 			if directCmds[base] {
+				sub := serviceFirstSubcommand(fields[1:])
+				if base == "systemctl" && systemctlReadOnly[sub] {
+					return ClassifyResult{}, false
+				}
+				if base == "launchctl" && launchctlReadOnly[sub] {
+					return ClassifyResult{}, false
+				}
+				// "service <name> status" is read-only.
+				if base == "service" && isServiceStatusCmd(fields[1:]) {
+					return ClassifyResult{}, false
+				}
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "service management requires approval",
@@ -824,6 +1062,16 @@ func serviceManagementRule() rule {
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
 			if directCmds[base] {
+				sub := serviceFirstSubcommand(args)
+				if base == "systemctl" && systemctlReadOnly[sub] {
+					return ClassifyResult{}, false
+				}
+				if base == "launchctl" && launchctlReadOnly[sub] {
+					return ClassifyResult{}, false
+				}
+				if base == "service" && isServiceStatusCmd(args) {
+					return ClassifyResult{}, false
+				}
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "service management requires approval",
@@ -844,6 +1092,27 @@ func serviceManagementRule() rule {
 	}
 }
 
+// serviceFirstSubcommand returns the first non-flag token from args.
+// It is used to find the subcommand for systemctl/launchctl.
+func serviceFirstSubcommand(args []string) string {
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			return a
+		}
+	}
+	return ""
+}
+
+// isServiceStatusCmd reports whether args (after the base "service" command)
+// represent "service <name> status", which is read-only.
+func isServiceStatusCmd(args []string) bool {
+	// "service <name> status" — args[0] is the service name, args[1] is "status".
+	if len(args) >= 2 && args[1] == "status" {
+		return true
+	}
+	return false
+}
+
 // crontabAtRule escalates scheduled task management commands: crontab, at, atq, atrm.
 func crontabAtRule() rule {
 	scheduleCmds := map[string]bool{
@@ -860,31 +1129,67 @@ func crontabAtRule() rule {
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if scheduleCmds[baseCommand(fields[0])] {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "scheduled task management requires approval",
-					Rule:     "crontab-at",
-				}, true
+			base := baseCommand(fields[0])
+			if !scheduleCmds[base] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			// crontab -l is read-only (list crontab); skip escalation.
+			// Strip redirects/pipes so "crontab -l 2>/dev/null | head -20"
+			// is correctly recognized as a list-only invocation.
+			if base == "crontab" && isCrontabListOnly(stripFieldsRedirectsAndPipes(fields[1:])) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "scheduled task management requires approval",
+				Rule:     "crontab-at",
+			}, true
 		},
-		MatchArgs: func(name string, _ []string) (ClassifyResult, bool) {
-			if scheduleCmds[baseCommand(name)] {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "scheduled task management requires approval",
-					Rule:     "crontab-at",
-				}, true
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			base := baseCommand(name)
+			if !scheduleCmds[base] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			if base == "crontab" && isCrontabListOnly(args) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "scheduled task management requires approval",
+				Rule:     "crontab-at",
+			}, true
 		},
 	}
 }
 
+// isCrontabListOnly reports whether args represent a read-only crontab
+// invocation. "crontab -l" and "crontab -l -u <user>" only list the crontab
+// and do not modify scheduled tasks.
+func isCrontabListOnly(args []string) bool {
+	hasList := false
+	for _, a := range args {
+		switch a {
+		case "-l":
+			hasList = true
+		case "-u":
+			// -u <user> is valid with -l; the next arg is the username
+			// and will be consumed as a non-flag below.
+			continue
+		default:
+			// Any other flag (e.g. -e, -r) or a file argument means
+			// this is NOT a list-only invocation.
+			if strings.HasPrefix(a, "-") {
+				return false
+			}
+			// Non-flag argument — could be the username after -u; allow it.
+		}
+	}
+	return hasList
+}
+
 // filePermissionRule matches chmod, chown, and chgrp commands that are NOT
-// already caught by the more specific forbidden rules (chmod-recursive-root,
-// chown-recursive-root). Since forbidden rules run first and take priority,
+// already caught by the more specific forbidden rule (recursive-perm-root).
+// Since forbidden rules run first and take priority,
 // this escalated rule only fires for non-root-recursive usages.
 func filePermissionRule() rule {
 	permCmds := map[string]bool{
@@ -931,26 +1236,139 @@ func firewallManagementRule() rule {
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if fwCmds[baseCommand(fields[0])] {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "firewall management requires approval",
-					Rule:     "firewall-management",
-				}, true
+			base := baseCommand(fields[0])
+			if !fwCmds[base] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			// Strip redirects and pipes so read-only detection is not
+			// confused by trailing "2>/dev/null", "| head -20", etc.
+			cleaned := stripFieldsRedirectsAndPipes(fields[1:])
+			if escalatedHasInfoFlag(cleaned) {
+				return ClassifyResult{}, false
+			}
+			if isFirewallReadOnly(base, cleaned) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "firewall management requires approval",
+				Rule:     "firewall-management",
+			}, true
 		},
-		MatchArgs: func(name string, _ []string) (ClassifyResult, bool) {
-			if fwCmds[baseCommand(name)] {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "firewall management requires approval",
-					Rule:     "firewall-management",
-				}, true
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			base := baseCommand(name)
+			if !fwCmds[base] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			if escalatedHasInfoFlag(args) {
+				return ClassifyResult{}, false
+			}
+			if isFirewallReadOnly(base, args) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "firewall management requires approval",
+				Rule:     "firewall-management",
+			}, true
 		},
 	}
+}
+
+// iptablesListOnlyFlags are the flags that constitute a read-only iptables
+// invocation. A command is list-only if every flag is in this set.
+var iptablesListOnlyFlags = map[string]bool{
+	"-L": true, flagList: true,
+	"-S": true, "--list-rules": true,
+	"-n": true, "--numeric": true,
+	"-v": true, "--verbose": true,
+	"--line-numbers": true,
+}
+
+// isFirewallReadOnly reports whether the given firewall command arguments
+// represent a read-only operation that does not modify firewall rules.
+func isFirewallReadOnly(base string, args []string) bool {
+	switch base {
+	case "iptables", "ip6tables":
+		return isIptablesListOnly(args)
+	case "ufw":
+		// "ufw status" (with optional "verbose"/"numbered") is read-only.
+		if len(args) >= 1 && args[0] == "status" {
+			return true
+		}
+	case "nft":
+		// "nft list ..." is read-only.
+		if len(args) >= 1 && args[0] == "list" {
+			return true
+		}
+	case "firewall-cmd":
+		return isFirewallCmdReadOnly(args)
+	}
+	return false
+}
+
+// isIptablesListOnly reports whether the iptables/ip6tables arguments only
+// contain listing flags (and optional table selection via -t <table>).
+func isIptablesListOnly(args []string) bool {
+	hasListFlag := false
+	skipNext := false
+	for _, a := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "-t" || a == "--table" {
+			skipNext = true // next arg is the table name
+			continue
+		}
+		if strings.HasPrefix(a, "-t") && len(a) > 2 {
+			// Short form: -tnat (table name glued to flag).
+			continue
+		}
+		if strings.HasPrefix(a, "--table=") {
+			continue
+		}
+		if iptablesListOnlyFlags[a] {
+			if a == "-L" || a == flagList || a == "-S" || a == "--list-rules" {
+				hasListFlag = true
+			}
+			continue
+		}
+		// A non-flag argument (chain name like "INPUT") is acceptable
+		// as part of listing, but any other flag (like -A, -D, -I, -F)
+		// means this is a write operation.
+		if strings.HasPrefix(a, "-") {
+			return false
+		}
+	}
+	return hasListFlag
+}
+
+// firewallCmdReadOnlyFlags are firewall-cmd flags that indicate read-only queries.
+var firewallCmdReadOnlyFlags = map[string]bool{
+	"--list-all":        true,
+	"--list-all-zones":  true,
+	"--state":           true,
+	"--get-active-zones": true,
+}
+
+// isFirewallCmdReadOnly reports whether the firewall-cmd arguments
+// only contain read-only query flags. All --flags must be in the
+// read-only set; any unknown --flag is treated as a potential write.
+func isFirewallCmdReadOnly(args []string) bool {
+	hasReadOnlyFlag := false
+	for _, a := range args {
+		if firewallCmdReadOnlyFlags[a] {
+			hasReadOnlyFlag = true
+			continue
+		}
+		// Any unknown --flag means this may be a write operation.
+		if strings.HasPrefix(a, "--") {
+			return false
+		}
+		// Non-flag args (like zone names) are acceptable with read-only flags.
+	}
+	return hasReadOnlyFlag
 }
 
 func networkScanRule() rule {
@@ -966,6 +1384,10 @@ func networkScanRule() rule {
 				return ClassifyResult{}, false
 			}
 			if scanCmds[baseCommand(fields[0])] {
+				// --help, -h, --version, -V are informational only.
+				if escalatedHasInfoFlag(stripFieldsRedirectsAndPipes(fields[1:])) {
+					return ClassifyResult{}, false
+				}
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "network scanning/capture requires approval",
@@ -974,8 +1396,11 @@ func networkScanRule() rule {
 			}
 			return ClassifyResult{}, false
 		},
-		MatchArgs: func(name string, _ []string) (ClassifyResult, bool) {
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			if scanCmds[baseCommand(name)] {
+				if escalatedHasInfoFlag(args) {
+					return ClassifyResult{}, false
+				}
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "network scanning/capture requires approval",
@@ -988,12 +1413,10 @@ func networkScanRule() rule {
 }
 
 func databaseClientRule() rule {
+	// Interactive database client commands only.
 	dbCmds := map[string]bool{
 		"mysql": true, "psql": true, "sqlite3": true,
-		"redis-cli": true, "mongo": true, "mongosh": true,
-		"mongodump": true, "mongoexport": true,
-		"mongoimport": true, "mongorestore": true,
-		"pg_dump": true, "pg_restore": true, "mysqldump": true,
+		cmdRedisCLI: true, "mongo": true, "mongosh": true,
 	}
 	return rule{
 		Name: "database-client",
@@ -1002,26 +1425,120 @@ func databaseClientRule() rule {
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if dbCmds[baseCommand(fields[0])] {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "database access requires approval",
-					Rule:     "database-client",
-				}, true
+			base := baseCommand(fields[0])
+			if !dbCmds[base] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			if isDBClientInfoOnly(base, fields[1:]) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "database access requires approval",
+				Rule:     "database-client",
+			}, true
 		},
-		MatchArgs: func(name string, _ []string) (ClassifyResult, bool) {
-			if dbCmds[baseCommand(name)] {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "database access requires approval",
-					Rule:     "database-client",
-				}, true
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			base := baseCommand(name)
+			if !dbCmds[base] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			if isDBClientInfoOnly(base, args) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "database access requires approval",
+				Rule:     "database-client",
+			}, true
 		},
 	}
+}
+
+// databaseBackupRule escalates database backup and restore operations.
+func databaseBackupRule() rule {
+	backupCmds := map[string]bool{
+		"pg_dump": true, "pg_restore": true, "mysqldump": true,
+		"mongodump": true, "mongorestore": true,
+		"mongoexport": true, "mongoimport": true,
+	}
+	return rule{
+		Name: "database-backup",
+		Match: func(command string) (ClassifyResult, bool) {
+			fields := strings.Fields(command)
+			if len(fields) == 0 {
+				return ClassifyResult{}, false
+			}
+			base := baseCommand(fields[0])
+			if !backupCmds[base] {
+				// Also check redis-cli SAVE/BGSAVE.
+				if base == cmdRedisCLI {
+					return checkRedisBackup(fields[1:])
+				}
+				return ClassifyResult{}, false
+			}
+			if isDBClientInfoOnly(base, fields[1:]) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "database backup/restore operation requires approval",
+				Rule:     "database-backup",
+			}, true
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			base := baseCommand(name)
+			if !backupCmds[base] {
+				if base == cmdRedisCLI {
+					return checkRedisBackup(args)
+				}
+				return ClassifyResult{}, false
+			}
+			if isDBClientInfoOnly(base, args) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "database backup/restore operation requires approval",
+				Rule:     "database-backup",
+			}, true
+		},
+	}
+}
+
+// checkRedisBackup checks if a redis-cli command is a SAVE/BGSAVE operation.
+func checkRedisBackup(args []string) (ClassifyResult, bool) {
+	for _, a := range args {
+		upper := strings.ToUpper(a)
+		if upper == "SAVE" || upper == "BGSAVE" {
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   "database backup/restore operation requires approval",
+				Rule:     "database-backup",
+			}, true
+		}
+	}
+	return ClassifyResult{}, false
+}
+
+// isDBClientInfoOnly reports whether the database client arguments represent
+// an informational-only invocation: version checks, help text, or a
+// redis-cli ping health check.
+// NOTE: unlike escalatedHasInfoFlag, this does NOT treat -h as help because
+// database tools like psql use -h for --host.
+func isDBClientInfoOnly(base string, args []string) bool {
+	cleaned := stripFieldsRedirectsAndPipes(args)
+	for _, a := range cleaned {
+		switch a {
+		case flagHelp, flagVersion, "-V":
+			return true
+		}
+	}
+	// redis-cli ping is a read-only health check.
+	if base == cmdRedisCLI && len(cleaned) == 1 && strings.EqualFold(cleaned[0], "ping") {
+		return true
+	}
+	return false
 }
 
 // gitStashDropRule escalates git stash drop/clear which destroy stashed work.
@@ -1208,4 +1725,18 @@ func dockerBuildRule() rule {
 			return ClassifyResult{}, false
 		},
 	}
+}
+
+// escalatedHasInfoFlag reports whether args contains --help, -h, or --version.
+// Commands invoked with these flags only display usage information and are safe.
+// NOTE: -h is included because most CLI tools use it for help. Database client
+// rules use a separate check since tools like psql use -h for --host.
+func escalatedHasInfoFlag(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case flagHelp, "-h", flagVersion:
+			return true
+		}
+	}
+	return false
 }

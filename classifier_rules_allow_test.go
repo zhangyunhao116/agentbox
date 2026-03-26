@@ -126,7 +126,6 @@ func TestClassifierVersionCheck(t *testing.T) {
 	}{
 		{"python --version", "python --version"},
 		{"node -v", "node -v"},
-		{"go version", "go version"},
 		{"java -V", "java -V"},
 		{"cargo --help", "cargo --help"},
 		{"rustc -h", "rustc -h"},
@@ -152,6 +151,9 @@ func TestClassifierVersionCheck(t *testing.T) {
 		{"compound", "python --version && rm -rf /"},
 		{"no flag", "python"},
 		{"verbose flag real cmd", "tar -xvf archive.tar -v"},
+		// Bare "version" subcommand is tool-specific, not a universal flag.
+		// e.g., "sqlite3 version" opens a file named "version", not a version check.
+		{"bare version subcommand", "go version"},
 	}
 	for _, tt := range notMatch {
 		t.Run("not_"+tt.name, func(t *testing.T) {

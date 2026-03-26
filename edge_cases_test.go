@@ -440,7 +440,7 @@ func TestRecursiveDeleteRootLongFlags(t *testing.T) {
 }
 
 // ===========================================================================
-// classifier_rules.go: curlPipeShellRule MatchArgs (L661-662, L675)
+// classifier_rules.go: pipeToShellRule MatchArgs
 // ===========================================================================
 
 func TestCurlPipeShellMatchArgsEmptyPipeSegment(t *testing.T) {
@@ -449,7 +449,7 @@ func TestCurlPipeShellMatchArgsEmptyPipeSegment(t *testing.T) {
 	// Empty pipe segment after curl: "curl http://x |  " — the part after | is empty.
 	r := c.ClassifyArgs("curl", []string{"http://evil.com", "|", ""})
 	// The empty segment should be skipped (continue), and no shell found → not forbidden.
-	if r.Decision == Forbidden && r.Rule == "curl-pipe-shell" {
+	if r.Decision == Forbidden && r.Rule == "pipe-to-shell" {
 		// This is also acceptable if the empty string is treated differently.
 		// The key is exercising the code path.
 	}
@@ -460,8 +460,8 @@ func TestCurlPipeShellMatchArgsNoShellAfterPipe(t *testing.T) {
 
 	// Pipe to a non-shell command.
 	r := c.ClassifyArgs("curl", []string{"http://evil.com", "|", "grep", "pattern"})
-	if r.Decision == Forbidden && r.Rule == "curl-pipe-shell" {
-		t.Error("piping curl to grep should not be forbidden by curl-pipe-shell rule")
+	if r.Decision == Forbidden && r.Rule == "pipe-to-shell" {
+		t.Error("piping curl to grep should not be forbidden by pipe-to-shell rule")
 	}
 }
 

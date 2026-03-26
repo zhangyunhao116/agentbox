@@ -404,6 +404,10 @@ func TestClassifierProcessKill(t *testing.T) {
 		{"Stop-Process powershell", "Stop-Process -Name node", Escalated},
 		{"stop-process lowercase", "stop-process -Name node", Escalated},
 		{"path-qualified kill", "/bin/kill 1234", Escalated},
+		// Read-only: kill -l lists signal names — NOT escalated.
+		{"kill -l", "kill -l", Sandboxed},
+		{"kill --list", "kill --list", Sandboxed},
+		{"kill -l TERM", "kill -l TERM", Sandboxed},
 		// Negative cases
 		{"echo kill", "echo kill", Allow},
 		{"grep kill", "grep kill logfile.txt", Allow},
@@ -436,6 +440,10 @@ func TestClassifierProcessKillArgs(t *testing.T) {
 		{"taskkill", "taskkill", []string{"/F", "/IM", "node.exe"}, Escalated},
 		{"Stop-Process", "Stop-Process", []string{"-Name", "node"}, Escalated},
 		{"stop-process lowercase", "stop-process", []string{"-Name", "node"}, Escalated},
+		// Read-only: kill -l should NOT be escalated.
+		{"kill -l", "kill", []string{"-l"}, Sandboxed},
+		{"kill --list", "kill", []string{"--list"}, Sandboxed},
+		{"kill -l signal", "kill", []string{"-l", "TERM"}, Sandboxed},
 		// Negative
 		{"echo", "echo", []string{"kill"}, Allow},
 	}
@@ -711,13 +719,29 @@ func TestClassifierServiceManagement(t *testing.T) {
 		want Decision
 	}{
 		{"systemctl start", "systemctl start nginx", Escalated},
-		{"systemctl status", "systemctl status sshd", Escalated},
+		{"systemctl restart", "systemctl restart sshd", Escalated},
+		{"systemctl enable", "systemctl enable nginx", Escalated},
 		{"service start", "service nginx start", Escalated},
 		{"launchctl load", "launchctl load com.example.plist", Escalated},
 		{"sc.exe start", "sc.exe start MyService", Escalated},
 		{"sc stop", "sc stop MyService", Escalated},
-		{"sc query", "sc query MyService", Escalated},
 		{"sc create", "sc create MyService binPath=...", Escalated},
+		// Read-only subcommands should NOT be escalated.
+		{"systemctl status", "systemctl status sshd", Sandboxed},
+		{"systemctl is-active", "systemctl is-active nginx", Sandboxed},
+		{"systemctl is-enabled", "systemctl is-enabled nginx", Sandboxed},
+		{"systemctl is-failed", "systemctl is-failed nginx", Sandboxed},
+		{"systemctl show", "systemctl show nginx", Sandboxed},
+		{"systemctl list-units", "systemctl list-units", Sandboxed},
+		{"systemctl list-unit-files", "systemctl list-unit-files", Sandboxed},
+		{"systemctl list-timers", "systemctl list-timers", Sandboxed},
+		{"systemctl cat", "systemctl cat nginx", Sandboxed},
+		{"launchctl list", "launchctl list", Sandboxed},
+		{"launchctl list grep", "launchctl list | grep openclaw", Sandboxed},
+		{"launchctl print", "launchctl print system/com.apple.launchd", Sandboxed},
+		{"sc query", "sc query MyService", Sandboxed},
+		{"sc query MySQL80", "sc query MySQL80", Sandboxed},
+		{"service status", "service nginx status", Sandboxed},
 		// Negative: sc without service subcommand
 		{"sc alone", "sc", Sandboxed},
 		{"sc random", "sc foo", Sandboxed},
@@ -746,10 +770,18 @@ func TestClassifierServiceManagementArgs(t *testing.T) {
 		want Decision
 	}{
 		{"systemctl", "systemctl", []string{"start", "nginx"}, Escalated},
+		{"systemctl restart", "systemctl", []string{"restart", "nginx"}, Escalated},
 		{"service", "service", []string{"nginx", "start"}, Escalated},
 		{"launchctl", "launchctl", []string{"load", "com.example.plist"}, Escalated},
 		{"sc.exe start", "sc.exe", []string{"start", "MyService"}, Escalated},
 		{"sc stop", "sc", []string{"stop", "MyService"}, Escalated},
+		// Read-only subcommands should NOT be escalated.
+		{"systemctl status", "systemctl", []string{"status", "nginx"}, Sandboxed},
+		{"systemctl is-active", "systemctl", []string{"is-active", "nginx"}, Sandboxed},
+		{"launchctl list", "launchctl", []string{"list"}, Sandboxed},
+		{"launchctl print", "launchctl", []string{"print", "system"}, Sandboxed},
+		{"sc query", "sc", []string{"query", "MyService"}, Sandboxed},
+		{"service status", "service", []string{"nginx", "status"}, Sandboxed},
 		// Negative
 		{"sc no args", "sc", []string{}, Sandboxed},
 		{"sc unknown", "sc", []string{"foo"}, Sandboxed},
@@ -773,11 +805,15 @@ func TestClassifierCrontabAt(t *testing.T) {
 		want Decision
 	}{
 		{"crontab edit", "crontab -e", Escalated},
-		{"crontab list", "crontab -l", Escalated},
 		{"crontab file", "crontab mycron.txt", Escalated},
 		{"at schedule", "at 10:00 PM", Escalated},
 		{"atq list", "atq", Escalated},
 		{"atrm remove", "atrm 5", Escalated},
+		{"crontab remove", "crontab -r", Escalated},
+		// Read-only: crontab -l should NOT be escalated.
+		{"crontab list", "crontab -l", Sandboxed},
+		{"crontab list user", "crontab -l -u root", Sandboxed},
+		{"crontab -u list", "crontab -u admin -l", Sandboxed},
 		// Negative
 		{"echo crontab", "echo crontab", Allow},
 		{"cat crontab", "cat /etc/crontab", Allow},
@@ -804,10 +840,12 @@ func TestClassifierCrontabAtArgs(t *testing.T) {
 		want Decision
 	}{
 		{"crontab", "crontab", []string{"-e"}, Escalated},
-		{"crontab -l", "crontab", []string{"-l"}, Escalated},
 		{"at", "at", []string{"10:00", "PM"}, Escalated},
 		{"atq", "atq", []string{}, Escalated},
 		{"atrm", "atrm", []string{"5"}, Escalated},
+		// Read-only: crontab -l should NOT be escalated.
+		{"crontab -l", "crontab", []string{"-l"}, Sandboxed},
+		{"crontab -l -u root", "crontab", []string{"-l", "-u", "root"}, Sandboxed},
 		// Negative
 		{"echo", "echo", []string{"crontab"}, Allow},
 	}
@@ -907,6 +945,7 @@ func TestClassifierUserManagement(t *testing.T) {
 		{"usermod", "usermod -aG docker testuser", Escalated},
 		{"groupadd", "groupadd developers", Escalated},
 		{"passwd", "passwd testuser", Escalated},
+		{"passwd bare", "passwd", Escalated},
 		{"chpasswd", "chpasswd", Escalated},
 		{"adduser", "adduser testuser", Escalated},
 		{"deluser", "deluser testuser", Escalated},
@@ -915,6 +954,14 @@ func TestClassifierUserManagement(t *testing.T) {
 		{"groupdel", "groupdel developers", Escalated},
 		{"groupmod", "groupmod -n newname oldname", Escalated},
 		{"path passwd", "/usr/bin/passwd testuser", Escalated},
+		// Help/version flags: should NOT be escalated.
+		// Note: simple "cmd --help" is caught first by the Allow
+		// "version-check" rule, so they return Allow.
+		{"passwd --help", "passwd --help", Allow},
+		{"useradd --help", "useradd --help", Allow},
+		{"useradd -h", "useradd -h", Allow},
+		{"usermod --version", "usermod --version", Allow},
+		{"groupadd --help", "groupadd --help", Allow},
 		// Negative
 		{"echo useradd", "echo useradd", Allow},
 		{"grep passwd", "grep passwd /etc/nsswitch.conf", Allow},
@@ -945,6 +992,12 @@ func TestClassifierUserManagementArgs(t *testing.T) {
 		{"passwd", "passwd", []string{"testuser"}, Escalated},
 		{"groupadd", "groupadd", []string{"developers"}, Escalated},
 		{"adduser", "adduser", []string{"testuser"}, Escalated},
+		// Help/version flags: should NOT be escalated.
+		// Allow rules run first — ClassifyArgs with single help/version flag returns Allow.
+		{"passwd --help", "passwd", []string{"--help"}, Allow},
+		{"useradd --help", "useradd", []string{"--help"}, Allow},
+		{"useradd -h", "useradd", []string{"-h"}, Allow},
+		{"usermod --version", "usermod", []string{"--version"}, Allow},
 		// Negative
 		{"echo", "echo", []string{"useradd"}, Allow},
 	}
@@ -1027,14 +1080,32 @@ func TestClassifierFirewallManagement(t *testing.T) {
 		cmd  string
 		want Decision
 	}{
-		{"iptables list", "iptables -L", Escalated},
 		{"iptables add rule", "iptables -A INPUT -p tcp --dport 80 -j ACCEPT", Escalated},
-		{"ip6tables", "ip6tables -L", Escalated},
+		{"iptables flush", "iptables -F", Escalated},
+		{"iptables delete", "iptables -D INPUT 1", Escalated},
+		{"ip6tables add", "ip6tables -A INPUT -p tcp --dport 80 -j ACCEPT", Escalated},
 		{"ufw enable", "ufw enable", Escalated},
 		{"ufw allow", "ufw allow 22/tcp", Escalated},
-		{"nft list", "nft list ruleset", Escalated},
-		{"firewall-cmd", "firewall-cmd --list-all", Escalated},
-		{"path-qualified iptables", "/sbin/iptables -L", Escalated},
+		{"nft add rule", "nft add rule ip filter input tcp dport 80 accept", Escalated},
+		{"firewall-cmd add", "firewall-cmd --add-service=http", Escalated},
+		{"path-qualified iptables -A", "/sbin/iptables -A INPUT -j DROP", Escalated},
+		// Read-only listing: should NOT be escalated.
+		{"iptables list", "iptables -L", Sandboxed},
+		{"iptables list numeric", "iptables -L -n", Sandboxed},
+		{"iptables list verbose", "iptables -L -n -v", Sandboxed},
+		{"iptables list-rules", "iptables -S", Sandboxed},
+		{"iptables list chain", "iptables -L INPUT -n --line-numbers", Sandboxed},
+		{"iptables list table", "iptables -t nat -L -n", Sandboxed},
+		{"ip6tables list", "ip6tables -L -n", Sandboxed},
+		{"path-qualified iptables list", "/sbin/iptables -L", Sandboxed},
+		{"ufw status", "ufw status", Sandboxed},
+		{"ufw status verbose", "ufw status verbose", Sandboxed},
+		{"nft list", "nft list ruleset", Sandboxed},
+		{"firewall-cmd list-all", "firewall-cmd --list-all", Sandboxed},
+		{"firewall-cmd state", "firewall-cmd --state", Sandboxed},
+		{"firewall-cmd get-zones", "firewall-cmd --get-active-zones", Sandboxed},
+		// Mixed read-only + write flags: should still be escalated.
+		{"firewall-cmd list+add bypass", "firewall-cmd --list-all --add-service=http", Escalated},
 		// Negative cases
 		{"nftables is not a CLI", "nftables list", Sandboxed},
 		{"ip addr", "ip addr", Sandboxed},
@@ -1062,12 +1133,22 @@ func TestClassifierFirewallManagementArgs(t *testing.T) {
 		args []string
 		want Decision
 	}{
-		{"iptables", "iptables", []string{"-L"}, Escalated},
-		{"ip6tables", "ip6tables", []string{"-A", "INPUT"}, Escalated},
+		{"iptables add", "iptables", []string{"-A", "INPUT", "-j", "DROP"}, Escalated},
+		{"ip6tables add", "ip6tables", []string{"-A", "INPUT"}, Escalated},
 		{"ufw", "ufw", []string{"enable"}, Escalated},
-		{"nft", "nft", []string{"list", "ruleset"}, Escalated},
-		{"firewall-cmd", "firewall-cmd", []string{"--list-all"}, Escalated},
-		{"path-qualified", "/usr/sbin/iptables", []string{"-L"}, Escalated},
+		{"nft add", "nft", []string{"add", "rule", "ip", "filter"}, Escalated},
+		{"firewall-cmd add", "firewall-cmd", []string{"--add-service=http"}, Escalated},
+		{"path-qualified add", "/usr/sbin/iptables", []string{"-A", "INPUT"}, Escalated},
+		// Read-only listing: should NOT be escalated.
+		{"iptables list", "iptables", []string{"-L"}, Sandboxed},
+		{"iptables list-n", "iptables", []string{"-L", "-n"}, Sandboxed},
+		{"iptables list-rules", "iptables", []string{"-S"}, Sandboxed},
+		{"ip6tables list", "ip6tables", []string{"-L", "-n"}, Sandboxed},
+		{"ufw status", "ufw", []string{"status"}, Sandboxed},
+		{"nft list", "nft", []string{"list", "ruleset"}, Sandboxed},
+		{"firewall-cmd list-all", "firewall-cmd", []string{"--list-all"}, Sandboxed},
+		{"firewall-cmd list+add bypass", "firewall-cmd", []string{"--list-all", "--add-service=http"}, Escalated},
+		{"path-qualified list", "/usr/sbin/iptables", []string{"-L"}, Sandboxed},
 		// Negative
 		{"ip", "ip", []string{"addr"}, Sandboxed},
 		{"echo", "echo", []string{"iptables"}, Allow},
@@ -1149,58 +1230,58 @@ func TestClassifierDockerRuntime(t *testing.T) {
 		want Decision
 		rule RuleName
 	}{
-		// docker subcommands
-		{"docker run", "docker run -it ubuntu bash", Escalated, "docker-runtime"},
-		{"docker exec", "docker exec -it mycontainer bash", Escalated, "docker-runtime"},
-		{"docker stop", "docker stop mycontainer", Escalated, "docker-runtime"},
-		{"docker rm", "docker rm mycontainer", Escalated, "docker-runtime"},
-		{"docker restart", "docker restart mycontainer", Escalated, "docker-runtime"},
-		{"docker kill", "docker kill mycontainer", Escalated, "docker-runtime"},
-		{"docker pause", "docker pause mycontainer", Escalated, "docker-runtime"},
-		{"docker unpause", "docker unpause mycontainer", Escalated, "docker-runtime"},
-		// docker object actions
-		{"docker system prune", "docker system prune -a", Escalated, "docker-runtime"},
-		{"docker volume rm", "docker volume rm myvol", Escalated, "docker-runtime"},
-		{"docker volume prune", "docker volume prune", Escalated, "docker-runtime"},
-		{"docker image rm", "docker image rm myimage", Escalated, "docker-runtime"},
-		{"docker image prune", "docker image prune", Escalated, "docker-runtime"},
-		{"docker container rm", "docker container rm mycontainer", Escalated, "docker-runtime"},
-		{"docker container prune", "docker container prune", Escalated, "docker-runtime"},
-		// podman
-		{"podman run", "podman run -it alpine sh", Escalated, "docker-runtime"},
-		{"podman exec", "podman exec -it mycontainer sh", Escalated, "docker-runtime"},
-		// docker-compose (hyphenated)
-		{"docker-compose up", "docker-compose up -d", Escalated, "docker-runtime"},
-		{"docker-compose down", "docker-compose down", Escalated, "docker-runtime"},
-		{"docker-compose restart", "docker-compose restart", Escalated, "docker-runtime"},
-		{"docker-compose rm", "docker-compose rm", Escalated, "docker-runtime"},
-		{"docker-compose stop", "docker-compose stop", Escalated, "docker-runtime"},
-		{"docker-compose kill", "docker-compose kill", Escalated, "docker-runtime"},
-		// docker compose (two-word)
-		{"docker compose up", "docker compose up -d", Escalated, "docker-runtime"},
-		{"docker compose down", "docker compose down", Escalated, "docker-runtime"},
-		{"docker compose restart", "docker compose restart", Escalated, "docker-runtime"},
-		{"docker compose rm", "docker compose rm", Escalated, "docker-runtime"},
-		{"docker compose stop", "docker compose stop", Escalated, "docker-runtime"},
-		{"docker compose kill", "docker compose kill", Escalated, "docker-runtime"},
-		// kubectl
-		{"kubectl apply", "kubectl apply -f deploy.yaml", Escalated, "docker-runtime"},
-		{"kubectl exec", "kubectl exec -it pod -- bash", Escalated, "docker-runtime"},
-		{"kubectl run", "kubectl run nginx --image=nginx", Escalated, "docker-runtime"},
-		{"kubectl delete", "kubectl delete pod mypod", Escalated, "docker-runtime"},
-		{"kubectl create", "kubectl create namespace test", Escalated, "docker-runtime"},
-		{"kubectl edit", "kubectl edit deployment myapp", Escalated, "docker-runtime"},
-		{"kubectl patch", "kubectl patch deployment myapp -p '{}'", Escalated, "docker-runtime"},
-		{"kubectl scale", "kubectl scale --replicas=3 deployment/myapp", Escalated, "docker-runtime"},
-		{"kubectl rollout", "kubectl rollout restart deployment/myapp", Escalated, "docker-runtime"},
-		// docker build/push/pull handled by docker-build rule, NOT docker-runtime
+		// docker subcommands → docker-container
+		{"docker run", "docker run -it ubuntu bash", Escalated, "docker-container"},
+		{"docker exec", "docker exec -it mycontainer bash", Escalated, "docker-container"},
+		{"docker stop", "docker stop mycontainer", Escalated, "docker-container"},
+		{"docker rm", "docker rm mycontainer", Escalated, "docker-container"},
+		{"docker restart", "docker restart mycontainer", Escalated, "docker-container"},
+		{"docker kill", "docker kill mycontainer", Escalated, "docker-container"},
+		{"docker pause", "docker pause mycontainer", Escalated, "docker-container"},
+		{"docker unpause", "docker unpause mycontainer", Escalated, "docker-container"},
+		// docker object actions → docker-container
+		{"docker system prune", "docker system prune -a", Escalated, "docker-container"},
+		{"docker volume rm", "docker volume rm myvol", Escalated, "docker-container"},
+		{"docker volume prune", "docker volume prune", Escalated, "docker-container"},
+		{"docker image rm", "docker image rm myimage", Escalated, "docker-container"},
+		{"docker image prune", "docker image prune", Escalated, "docker-container"},
+		{"docker container rm", "docker container rm mycontainer", Escalated, "docker-container"},
+		{"docker container prune", "docker container prune", Escalated, "docker-container"},
+		// podman → docker-container
+		{"podman run", "podman run -it alpine sh", Escalated, "docker-container"},
+		{"podman exec", "podman exec -it mycontainer sh", Escalated, "docker-container"},
+		// docker-compose (hyphenated) → docker-compose
+		{"docker-compose up", "docker-compose up -d", Escalated, "docker-compose"},
+		{"docker-compose down", "docker-compose down", Escalated, "docker-compose"},
+		{"docker-compose restart", "docker-compose restart", Escalated, "docker-compose"},
+		{"docker-compose rm", "docker-compose rm", Escalated, "docker-compose"},
+		{"docker-compose stop", "docker-compose stop", Escalated, "docker-compose"},
+		{"docker-compose kill", "docker-compose kill", Escalated, "docker-compose"},
+		// docker compose (two-word) → docker-compose
+		{"docker compose up", "docker compose up -d", Escalated, "docker-compose"},
+		{"docker compose down", "docker compose down", Escalated, "docker-compose"},
+		{"docker compose restart", "docker compose restart", Escalated, "docker-compose"},
+		{"docker compose rm", "docker compose rm", Escalated, "docker-compose"},
+		{"docker compose stop", "docker compose stop", Escalated, "docker-compose"},
+		{"docker compose kill", "docker compose kill", Escalated, "docker-compose"},
+		// kubectl → kubernetes
+		{"kubectl apply", "kubectl apply -f deploy.yaml", Escalated, "kubernetes"},
+		{"kubectl exec", "kubectl exec -it pod -- bash", Escalated, "kubernetes"},
+		{"kubectl run", "kubectl run nginx --image=nginx", Escalated, "kubernetes"},
+		{"kubectl delete", "kubectl delete pod mypod", Escalated, "kubernetes"},
+		{"kubectl create", "kubectl create namespace test", Escalated, "kubernetes"},
+		{"kubectl edit", "kubectl edit deployment myapp", Escalated, "kubernetes"},
+		{"kubectl patch", "kubectl patch deployment myapp -p '{}'", Escalated, "kubernetes"},
+		{"kubectl scale", "kubectl scale --replicas=3 deployment/myapp", Escalated, "kubernetes"},
+		{"kubectl rollout", "kubectl rollout restart deployment/myapp", Escalated, "kubernetes"},
+		// docker build/push/pull handled by docker-build rule, NOT docker-container
 		{"docker build", "docker build .", Escalated, "docker-build"},
 		{"docker push", "docker push myimage", Escalated, "docker-build"},
 		{"docker pull", "docker pull ubuntu", Escalated, "docker-build"},
-		// Read-only docker commands — should NOT match docker-runtime
+		// Read-only docker commands — should NOT match docker-container
 		{"docker ps", "docker ps", Sandboxed, ""},
 		{"docker images", "docker images", Sandboxed, ""},
-		{"docker version", "docker version", Allow, ""},
+		{"docker version", "docker version", Sandboxed, ""},
 		{"docker info", "docker info", Sandboxed, ""},
 		{"docker logs", "docker logs mycontainer", Sandboxed, ""},
 		{"docker inspect", "docker inspect mycontainer", Sandboxed, ""},
@@ -1235,19 +1316,19 @@ func TestClassifierDockerRuntimeArgs(t *testing.T) {
 		want Decision
 		rule RuleName
 	}{
-		{"docker run", "docker", []string{"run", "-it", "ubuntu"}, Escalated, "docker-runtime"},
-		{"docker exec", "docker", []string{"exec", "-it", "container", "bash"}, Escalated, "docker-runtime"},
-		{"docker stop", "docker", []string{"stop", "container"}, Escalated, "docker-runtime"},
-		{"docker rm", "docker", []string{"rm", "container"}, Escalated, "docker-runtime"},
-		{"docker system prune", "docker", []string{"system", "prune"}, Escalated, "docker-runtime"},
-		{"docker volume rm", "docker", []string{"volume", "rm", "myvol"}, Escalated, "docker-runtime"},
-		{"docker compose up", "docker", []string{"compose", "up", "-d"}, Escalated, "docker-runtime"},
-		{"docker compose down", "docker", []string{"compose", "down"}, Escalated, "docker-runtime"},
-		{"docker-compose up", "docker-compose", []string{"up", "-d"}, Escalated, "docker-runtime"},
-		{"podman run", "podman", []string{"run", "alpine"}, Escalated, "docker-runtime"},
-		{"kubectl apply", "kubectl", []string{"apply", "-f", "deploy.yaml"}, Escalated, "docker-runtime"},
-		{"kubectl delete", "kubectl", []string{"delete", "pod", "mypod"}, Escalated, "docker-runtime"},
-		{"kubectl scale", "kubectl", []string{"scale", "--replicas=3", "deployment/myapp"}, Escalated, "docker-runtime"},
+		{"docker run", "docker", []string{"run", "-it", "ubuntu"}, Escalated, "docker-container"},
+		{"docker exec", "docker", []string{"exec", "-it", "container", "bash"}, Escalated, "docker-container"},
+		{"docker stop", "docker", []string{"stop", "container"}, Escalated, "docker-container"},
+		{"docker rm", "docker", []string{"rm", "container"}, Escalated, "docker-container"},
+		{"docker system prune", "docker", []string{"system", "prune"}, Escalated, "docker-container"},
+		{"docker volume rm", "docker", []string{"volume", "rm", "myvol"}, Escalated, "docker-container"},
+		{"docker compose up", "docker", []string{"compose", "up", "-d"}, Escalated, "docker-compose"},
+		{"docker compose down", "docker", []string{"compose", "down"}, Escalated, "docker-compose"},
+		{"docker-compose up", "docker-compose", []string{"up", "-d"}, Escalated, "docker-compose"},
+		{"podman run", "podman", []string{"run", "alpine"}, Escalated, "docker-container"},
+		{"kubectl apply", "kubectl", []string{"apply", "-f", "deploy.yaml"}, Escalated, "kubernetes"},
+		{"kubectl delete", "kubectl", []string{"delete", "pod", "mypod"}, Escalated, "kubernetes"},
+		{"kubectl scale", "kubectl", []string{"scale", "--replicas=3", "deployment/myapp"}, Escalated, "kubernetes"},
 		// docker build -> docker-build rule
 		{"docker build", "docker", []string{"build", "."}, Escalated, "docker-build"},
 		// Negative
@@ -1275,26 +1356,51 @@ func TestClassifierDatabaseClient(t *testing.T) {
 		name string
 		cmd  string
 		want Decision
+		rule RuleName
 	}{
-		{"mysql", "mysql -u root -p dbname", Escalated},
-		{"psql", "psql -h localhost mydb", Escalated},
-		{"sqlite3", "sqlite3 test.db", Escalated},
-		{"redis-cli", "redis-cli FLUSHALL", Escalated},
-		{"redis-cli get", "redis-cli GET mykey", Escalated},
-		{"mongo", "mongo mydb", Escalated},
-		{"mongosh", "mongosh mydb", Escalated},
-		{"mongodump", "mongodump --db=mydb", Escalated},
-		{"mongoexport", "mongoexport --db=mydb --collection=users", Escalated},
-		{"mongoimport", "mongoimport --db=mydb --collection=users", Escalated},
-		{"mongorestore", "mongorestore dump/", Escalated},
-		{"pg_dump", "pg_dump mydb > backup.sql", Escalated},
-		{"pg_restore", "pg_restore backup.dump", Escalated},
-		{"mysqldump", "mysqldump mydb > backup.sql", Escalated},
-		{"path-qualified mysql", "/usr/bin/mysql -u root mydb", Escalated},
+		// Interactive client commands → database-client
+		{"mysql", "mysql -u root -p dbname", Escalated, "database-client"},
+		{"psql", "psql -h localhost mydb", Escalated, "database-client"},
+		{"sqlite3", "sqlite3 test.db", Escalated, "database-client"},
+		{"redis-cli", "redis-cli FLUSHALL", Escalated, "database-client"},
+		{"redis-cli get", "redis-cli GET mykey", Escalated, "database-client"},
+		{"mongo", "mongo mydb", Escalated, "database-client"},
+		{"mongosh", "mongosh mydb", Escalated, "database-client"},
+		// Backup/restore commands → database-backup
+		{"mongodump", "mongodump --db=mydb", Escalated, "database-backup"},
+		{"mongoexport", "mongoexport --db=mydb --collection=users", Escalated, "database-backup"},
+		{"mongoimport", "mongoimport --db=mydb --collection=users", Escalated, "database-backup"},
+		{"mongorestore", "mongorestore dump/", Escalated, "database-backup"},
+		{"pg_dump", "pg_dump mydb > backup.sql", Escalated, "database-backup"},
+		{"pg_restore", "pg_restore backup.dump", Escalated, "database-backup"},
+		{"mysqldump", "mysqldump mydb > backup.sql", Escalated, "database-backup"},
+		// redis-cli SAVE/BGSAVE → database-backup
+		{"redis-cli SAVE", "redis-cli SAVE", Escalated, "database-backup"},
+		{"redis-cli BGSAVE", "redis-cli BGSAVE", Escalated, "database-backup"},
+		{"redis-cli save lower", "redis-cli save", Escalated, "database-backup"},
+		// Path-qualified → database-client
+		{"path-qualified mysql", "/usr/bin/mysql -u root mydb", Escalated, "database-client"},
+		// Version/help/ping: should NOT be escalated.
+		// Note: "mysql --version" etc. are caught first by the Allow
+		// "version-check" rule, so they return Allow (not Sandboxed).
+		{"mysql --version", "mysql --version", Allow, ""},
+		{"mysql -V", "mysql -V", Allow, ""},
+		{"psql --version", "psql --version", Allow, ""},
+		{"redis-cli --version", "redis-cli --version", Allow, ""},
+		{"redis-cli ping", "redis-cli ping", Sandboxed, ""},
+		{"redis-cli PING", "redis-cli PING", Sandboxed, ""},
+		{"mongosh --version", "mongosh --version", Allow, ""},
+		{"mysql --help", "mysql --help", Allow, ""},
+		{"psql --help", "psql --help", Allow, ""},
+		{"sqlite3 version", "sqlite3 version", Escalated, "database-client"},
+		// Backup info-only: version/help should not be escalated.
+		{"pg_dump --version", "pg_dump --version", Allow, ""},
+		{"mysqldump --help", "mysqldump --help", Allow, ""},
+		{"mongodump --version", "mongodump --version", Allow, ""},
 		// Negative cases
-		{"echo mysql", "echo mysql", Allow},
-		{"grep psql", "grep psql /var/log/syslog", Allow},
-		{"cat sqlite", "cat sqlite.txt", Allow},
+		{"echo mysql", "echo mysql", Allow, ""},
+		{"grep psql", "grep psql /var/log/syslog", Allow, ""},
+		{"cat sqlite", "cat sqlite.txt", Allow, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1302,8 +1408,8 @@ func TestClassifierDatabaseClient(t *testing.T) {
 			if r.Decision != tt.want {
 				t.Errorf("Classify(%q) = %v (rule=%s), want %v", tt.cmd, r.Decision, r.Rule, tt.want)
 			}
-			if r.Decision == Escalated && r.Rule != "database-client" {
-				t.Errorf("expected rule database-client, got %q", r.Rule)
+			if tt.rule != "" && r.Rule != tt.rule {
+				t.Errorf("Classify(%q) rule = %q, want %q", tt.cmd, r.Rule, tt.rule)
 			}
 		})
 	}
@@ -1316,24 +1422,42 @@ func TestClassifierDatabaseClientArgs(t *testing.T) {
 		cmd  string
 		args []string
 		want Decision
+		rule RuleName
 	}{
-		{"mysql", "mysql", []string{"-u", "root", "-p", "mydb"}, Escalated},
-		{"psql", "psql", []string{"-h", "localhost", "mydb"}, Escalated},
-		{"sqlite3", "sqlite3", []string{"test.db"}, Escalated},
-		{"redis-cli", "redis-cli", []string{"FLUSHALL"}, Escalated},
-		{"mongo", "mongo", []string{"mydb"}, Escalated},
-		{"mongosh", "mongosh", []string{}, Escalated},
-		{"pg_dump", "pg_dump", []string{"mydb"}, Escalated},
-		{"mysqldump", "mysqldump", []string{"mydb"}, Escalated},
-		{"path-qualified", "/usr/bin/psql", []string{"mydb"}, Escalated},
+		// Interactive client commands → database-client
+		{"mysql", "mysql", []string{"-u", "root", "-p", "mydb"}, Escalated, "database-client"},
+		{"psql", "psql", []string{"-h", "localhost", "mydb"}, Escalated, "database-client"},
+		{"sqlite3", "sqlite3", []string{"test.db"}, Escalated, "database-client"},
+		{"redis-cli", "redis-cli", []string{"FLUSHALL"}, Escalated, "database-client"},
+		{"mongo", "mongo", []string{"mydb"}, Escalated, "database-client"},
+		{"mongosh", "mongosh", []string{}, Escalated, "database-client"},
+		// Backup/restore commands → database-backup
+		{"pg_dump", "pg_dump", []string{"mydb"}, Escalated, "database-backup"},
+		{"mysqldump", "mysqldump", []string{"mydb"}, Escalated, "database-backup"},
+		{"mongodump", "mongodump", []string{"--db=mydb"}, Escalated, "database-backup"},
+		{"mongorestore", "mongorestore", []string{"dump/"}, Escalated, "database-backup"},
+		{"redis-cli SAVE", "redis-cli", []string{"SAVE"}, Escalated, "database-backup"},
+		{"redis-cli BGSAVE", "redis-cli", []string{"BGSAVE"}, Escalated, "database-backup"},
+		{"path-qualified", "/usr/bin/psql", []string{"mydb"}, Escalated, "database-client"},
+		// Version/help/ping: should NOT be escalated.
+		// Allow rules run first — ClassifyArgs with version flags returns Allow.
+		{"mysql --version", "mysql", []string{"--version"}, Allow, ""},
+		{"mysql -V", "mysql", []string{"-V"}, Allow, ""},
+		{"psql --version", "psql", []string{"--version"}, Allow, ""},
+		{"redis-cli --version", "redis-cli", []string{"--version"}, Allow, ""},
+		{"redis-cli ping", "redis-cli", []string{"ping"}, Sandboxed, ""},
+		{"mysql --help", "mysql", []string{"--help"}, Allow, ""},
 		// Negative
-		{"echo", "echo", []string{"mysql"}, Allow},
+		{"echo", "echo", []string{"mysql"}, Allow, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := c.ClassifyArgs(tt.cmd, tt.args)
 			if r.Decision != tt.want {
 				t.Errorf("ClassifyArgs(%q, %v) = %v, want %v", tt.cmd, tt.args, r.Decision, tt.want)
+			}
+			if tt.rule != "" && r.Rule != tt.rule {
+				t.Errorf("ClassifyArgs(%q, %v) rule = %q, want %q", tt.cmd, tt.args, r.Rule, tt.rule)
 			}
 		})
 	}
@@ -1584,3 +1708,353 @@ func TestIsCredentialSensitivePath(t *testing.T) {
 // ---------------------------------------------------------------------------
 // commonSafeCommands expansion: test and [
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Helper: stripFieldsRedirectsAndPipes
+// ---------------------------------------------------------------------------
+
+func TestStripFieldsRedirectsAndPipes(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields []string
+		want   []string
+	}{
+		{"no redirects", []string{"-L", "-n"}, []string{"-L", "-n"}},
+		{"2>/dev/null", []string{"-l", "2>/dev/null"}, []string{"-l"}},
+		{"2>&1", []string{"ping", "2>&1"}, []string{"ping"}},
+		{"pipe", []string{"-L", "-n", "|", "head", "-20"}, []string{"-L", "-n"}},
+		{"redirect then pipe", []string{"-L", "-n", "2>&1", "|", "head", "-20"}, []string{"-L", "-n"}},
+		{"&&", []string{"-l", "&&", "netstat"}, []string{"-l"}},
+		{"semicolon", []string{"-l", ";", "launchctl"}, []string{"-l"}},
+		{"bare > redirect", []string{"-l", ">", "/tmp/out"}, []string{"-l"}},
+		{"empty", []string{}, []string{}},
+		{"redirect only", []string{"2>/dev/null"}, []string{}},
+		{"||", []string{"-S", "root", "||", "true"}, []string{"-S", "root"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripFieldsRedirectsAndPipes(tt.fields)
+			if len(got) == 0 && len(tt.want) == 0 {
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("stripFieldsRedirectsAndPipes(%v) = %v, want %v", tt.fields, got, tt.want)
+				return
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("stripFieldsRedirectsAndPipes(%v) = %v, want %v", tt.fields, got, tt.want)
+					return
+				}
+			}
+		})
+	}
+}
+
+func TestIsShellRedirect(t *testing.T) {
+	tests := []struct {
+		tok  string
+		want bool
+	}{
+		{"2>/dev/null", true},
+		{"2>&1", true},
+		{">", true},
+		{">>", true},
+		{"&>/dev/null", true},
+		{"1>&2", true},
+		{"-L", false},
+		{"head", false},
+		{"ping", false},
+		{"--version", false},
+		{"|", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tok, func(t *testing.T) {
+			got := isShellRedirect(tt.tok)
+			if got != tt.want {
+				t.Errorf("isShellRedirect(%q) = %v, want %v", tt.tok, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E1: ssh-command — exclude ssh -V version check
+// ---------------------------------------------------------------------------
+
+func TestClassifierSSHCommandVersionCheck(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		// ssh -V (uppercase) is a version check — should NOT be escalated.
+		// Note: simple "ssh -V" is caught first by the Allow "version-check"
+		// rule, so it returns Allow (not Sandboxed).
+		{"ssh -V", "ssh -V", Allow},
+		{"ssh -V 2>&1", "ssh -V 2>&1", Allow},
+		// ssh -v (lowercase) is verbose mode — should still be escalated.
+		{"ssh -v user@host", "ssh -v user@host", Escalated},
+		// ssh with actual connections — still escalated.
+		{"ssh user@host", "ssh user@host", Escalated},
+		{"ssh -p 22 user@host", "ssh -p 22 user@host", Escalated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%s), want %v", tt.cmd, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifierSSHCommandVersionCheckArgs(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		args []string
+		want Decision
+	}{
+		{"ssh -V", "ssh", []string{"-V"}, Allow},
+		{"ssh -v user@host", "ssh", []string{"-v", "user@host"}, Escalated},
+		{"ssh user@host", "ssh", []string{"user@host"}, Escalated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.ClassifyArgs(tt.cmd, tt.args)
+			if r.Decision != tt.want {
+				t.Errorf("ClassifyArgs(%q, %v) = %v (rule=%s), want %v", tt.cmd, tt.args, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E2: network-scan — info flag check with redirects/pipes
+// ---------------------------------------------------------------------------
+
+func TestClassifierNetworkScanInfoFlags(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		// Version/help flags — should NOT be escalated.
+		// Note: simple "cmd --version" is caught first by the Allow "version-check"
+		// rule, so they return Allow.
+		{"tshark --version", "tshark --version", Allow},
+		{"nmap --version", "nmap --version", Allow},
+		{"nmap --version 2>&1 | head -3", "/usr/bin/nmap --version 2>&1 | head -3", Sandboxed},
+		{"nmap --version 2>&1", "/usr/local/bin/nmap --version 2>&1", Allow},
+		{"nmap --help", "nmap --help", Allow},
+		{"tshark -h", "tshark -h", Allow},
+		{"masscan --version", "masscan --version", Allow},
+		// Actual scanning — still escalated.
+		{"nmap scan", "nmap -sS 192.168.1.0/24", Escalated},
+		{"tcpdump", "tcpdump -i eth0", Escalated},
+		{"tshark capture", "tshark -i eth0", Escalated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%s), want %v", tt.cmd, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifierNetworkScanInfoFlagsArgs(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		args []string
+		want Decision
+	}{
+		{"nmap --version", "nmap", []string{"--version"}, Allow},
+		{"tshark --version", "tshark", []string{"--version"}, Allow},
+		{"nmap -h", "nmap", []string{"-h"}, Allow},
+		{"nmap scan", "nmap", []string{"-sS", "192.168.1.0/24"}, Escalated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.ClassifyArgs(tt.cmd, tt.args)
+			if r.Decision != tt.want {
+				t.Errorf("ClassifyArgs(%q, %v) = %v (rule=%s), want %v", tt.cmd, tt.args, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E3: firewall-management — pipes in iptables list + help flags
+// ---------------------------------------------------------------------------
+
+func TestClassifierFirewallManagementPipesAndHelp(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		// List with pipes — should NOT be escalated.
+		{"iptables -L -n | head -20", "iptables -L -n | head -20", Sandboxed},
+		{"iptables -L -n | head -50", "iptables -L -n | head -50", Sandboxed},
+		{"iptables -L INPUT --line-numbers 2>&1 | head -30", "iptables -L INPUT -n --line-numbers 2>&1 | head -30", Sandboxed},
+		{"iptables -L FORWARD --line-numbers 2>&1 | head -30", "iptables -L FORWARD -n --line-numbers 2>&1 | head -30", Sandboxed},
+		// Help flags — should NOT be escalated.
+		{"iptables --help 2>&1 | head -5", "iptables --help 2>&1 | head -5", Sandboxed},
+		{"ufw --help 2>&1 | head -5", "ufw --help 2>&1 | head -5", Sandboxed},
+		{"firewall-cmd --help 2>&1 | head -5", "firewall-cmd --help 2>&1 | head -5", Sandboxed},
+		// Write operations — still escalated.
+		{"iptables -A INPUT -j DROP", "iptables -A INPUT -j DROP", Escalated},
+		{"ufw allow 22/tcp", "ufw allow 22/tcp", Escalated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%s), want %v", tt.cmd, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifierFirewallManagementHelpArgs(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		args []string
+		want Decision
+	}{
+		{"iptables --help", "iptables", []string{"--help"}, Allow},
+		{"ufw --help", "ufw", []string{"--help"}, Allow},
+		{"firewall-cmd --help", "firewall-cmd", []string{"--help"}, Allow},
+		{"iptables -A", "iptables", []string{"-A", "INPUT", "-j", "DROP"}, Escalated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.ClassifyArgs(tt.cmd, tt.args)
+			if r.Decision != tt.want {
+				t.Errorf("ClassifyArgs(%q, %v) = %v (rule=%s), want %v", tt.cmd, tt.args, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E4: database-client — redirects in redis-cli ping
+// ---------------------------------------------------------------------------
+
+func TestClassifierDatabaseClientRedirects(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		// redis-cli ping with redirects — should NOT be escalated.
+		{"redis-cli ping 2>&1", "redis-cli ping 2>&1", Sandboxed},
+		{"redis-cli ping 2>/dev/null", "redis-cli ping 2>/dev/null", Sandboxed},
+		// Without redirects — already handled, still should not be escalated.
+		{"redis-cli ping", "redis-cli ping", Sandboxed},
+		// Actual DB operations — still escalated.
+		{"redis-cli FLUSHALL", "redis-cli FLUSHALL", Escalated},
+		{"redis-cli GET key", "redis-cli GET mykey", Escalated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%s), want %v", tt.cmd, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E5: crontab-at — redirects/pipes in crontab -l
+// ---------------------------------------------------------------------------
+
+func TestClassifierCrontabAtRedirects(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		// crontab -l with redirects/pipes — should NOT be escalated.
+		{"crontab -l 2>/dev/null | head -20", "crontab -l 2>/dev/null | head -20", Sandboxed},
+		{"crontab -l 2>/dev/null | grep -i order", "crontab -l 2>/dev/null | grep -i order", Sandboxed},
+		{"crontab -l && netstat -tlnp", "crontab -l && netstat -tlnp | grep 50888", Sandboxed},
+		{"crontab -l 2>&1 | head -20", "crontab -l 2>&1 | head -20", Sandboxed},
+		// Edit operations — still escalated.
+		{"crontab -e", "crontab -e", Escalated},
+		{"crontab -r", "crontab -r", Escalated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%s), want %v", tt.cmd, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E6: user-management — passwd -S exclusion
+// ---------------------------------------------------------------------------
+
+func TestClassifierUserManagementPasswdStatus(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		// passwd -S (status check) — should NOT be escalated.
+		{"passwd -S root 2>/dev/null", "passwd -S root 2>/dev/null || true", Sandboxed},
+		{"passwd -S root", "passwd -S root", Sandboxed},
+		{"passwd --status root", "passwd --status root", Sandboxed},
+		// Actual password change — still escalated.
+		{"passwd testuser", "passwd testuser", Escalated},
+		{"passwd bare", "passwd", Escalated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%s), want %v", tt.cmd, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifierUserManagementPasswdStatusArgs(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		args []string
+		want Decision
+	}{
+		{"passwd -S root", "passwd", []string{"-S", "root"}, Sandboxed},
+		{"passwd --status root", "passwd", []string{"--status", "root"}, Sandboxed},
+		{"passwd testuser", "passwd", []string{"testuser"}, Escalated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.ClassifyArgs(tt.cmd, tt.args)
+			if r.Decision != tt.want {
+				t.Errorf("ClassifyArgs(%q, %v) = %v (rule=%s), want %v", tt.cmd, tt.args, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}

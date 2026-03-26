@@ -12,11 +12,9 @@ const (
 	RuleRecursiveDeleteRoot  RuleName = "recursive-delete-root"
 	RuleDiskWipe             RuleName = "disk-wipe"
 	RuleReverseShell         RuleName = "reverse-shell"
-	RuleChmodRecursiveRoot   RuleName = "chmod-recursive-root"
-	RuleChownRecursiveRoot   RuleName = "chown-recursive-root"
+	RuleRecursivePermRoot    RuleName = "recursive-perm-root"
 	RuleFilesystemFormat     RuleName = "filesystem-format"
-	RuleCurlPipeShell        RuleName = "curl-pipe-shell"
-	RuleBase64PipeShell      RuleName = "base64-pipe-shell"
+	RulePipeToShell          RuleName = "pipe-to-shell"
 	RuleIFSBypass            RuleName = "ifs-bypass"
 	RuleShutdownReboot       RuleName = "shutdown-reboot"
 	RuleKernelModule         RuleName = "kernel-module"
@@ -45,8 +43,11 @@ const (
 	RuleFilePermission       RuleName = "file-permission"
 	RuleFirewallManagement   RuleName = "firewall-management"
 	RuleNetworkScan          RuleName = "network-scan"
-	RuleDockerRuntime        RuleName = "docker-runtime"
+	RuleDockerContainer      RuleName = "docker-container"
+	RuleDockerCompose        RuleName = "docker-compose"
+	RuleKubernetes           RuleName = "kubernetes"
 	RuleDatabaseClient       RuleName = "database-client"
+	RuleDatabaseBackup       RuleName = "database-backup"
 	RuleGitStashDrop         RuleName = "git-stash-drop"
 	RuleEvalExec             RuleName = "eval-exec"
 
@@ -69,11 +70,9 @@ func BuiltinRuleNames() []RuleName {
 		RuleRecursiveDeleteRoot,
 		RuleDiskWipe,
 		RuleReverseShell,
-		RuleChmodRecursiveRoot,
-		RuleChownRecursiveRoot,
+		RuleRecursivePermRoot,
 		RuleFilesystemFormat,
-		RuleCurlPipeShell,
-		RuleBase64PipeShell,
+		RulePipeToShell,
 		RuleIFSBypass,
 		RuleShutdownReboot,
 		RuleKernelModule,
@@ -90,7 +89,9 @@ func BuiltinRuleNames() []RuleName {
 		RuleUserManagement,
 		RuleGlobalInstall,
 		RuleDockerBuild,
-		RuleDockerRuntime,
+		RuleDockerContainer,
+		RuleDockerCompose,
+		RuleKubernetes,
 		RuleSystemPackageInstall,
 		RuleProcessKill,
 		RuleGitWrite,
@@ -102,6 +103,7 @@ func BuiltinRuleNames() []RuleName {
 		RuleFilePermission,
 		RuleFirewallManagement,
 		RuleNetworkScan,
+		RuleDatabaseBackup,
 		RuleDatabaseClient,
 		RuleGitStashDrop,
 		RuleEvalExec,

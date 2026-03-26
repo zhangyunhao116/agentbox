@@ -124,8 +124,8 @@ func gitReadCommandsRule() rule {
 
 // versionHelpFlags is the set of flags that indicate a version/help check.
 var versionHelpFlags = map[string]bool{
-	"--version": true, "-v": true, "-V": true,
-	"--help": true, "-h": true, "version": true,
+	flagVersion: true, "-v": true, "-V": true,
+	flagHelp: true, "-h": true,
 }
 
 // versionCheckRule matches simple "X --version", "X -v", "X --help" etc.
