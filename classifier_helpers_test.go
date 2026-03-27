@@ -384,3 +384,115 @@ func TestIsCommandSeparator(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// pipeShells variable tests
+// ---------------------------------------------------------------------------
+
+func TestPipeShellsContent(t *testing.T) {
+	// Verify the canonical list contains expected interpreters.
+	expected := []string{"sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby", "node"}
+	if len(pipeShells) != len(expected) {
+		t.Fatalf("pipeShells has %d elements, want %d", len(pipeShells), len(expected))
+	}
+	for i, s := range expected {
+		if pipeShells[i] != s {
+			t.Errorf("pipeShells[%d] = %q, want %q", i, pipeShells[i], s)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// rmHasRecursiveForce helper tests
+// ---------------------------------------------------------------------------
+
+func TestRmHasRecursiveForce(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"rf combined", []string{"-rf", "/"}, true},
+		{"Rf combined", []string{"-Rf", "/"}, true},
+		{"separate flags", []string{"-r", "-f", "/"}, true},
+		{"long recursive short f", []string{"--recursive", "-f", "/"}, true},
+		{"short r long force", []string{"-r", "--force", "/"}, true},
+		{"long both", []string{"--recursive", "--force", "/"}, true},
+		{"recursive only", []string{"-r", "/"}, false},
+		{"force only", []string{"-f", "/"}, false},
+		{"no flags", []string{"/"}, false},
+		{"empty", []string{}, false},
+		{"stops at separator", []string{"-r", "&&", "-f", "/"}, false},
+		{"stops at --", []string{"-r", "--", "-f", "/"}, false},
+		{"bundled rfi", []string{"-rfi", "/"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rmHasRecursiveForce(tt.args)
+			if got != tt.want {
+				t.Errorf("rmHasRecursiveForce(%v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// findHasDestructiveAction helper tests
+// ---------------------------------------------------------------------------
+
+func TestFindHasDestructiveAction(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"delete flag", []string{".", "-name", "*.tmp", "-delete"}, true},
+		{"exec rm", []string{".", "-exec", "rm", "{}", ";"}, true},
+		{"exec with path rm", []string{".", "-exec", "/bin/rm", "{}", ";"}, true},
+		{"execdir rm", []string{".", "-execdir", "rm", "{}", ";"}, true},
+		{"ok rm", []string{".", "-ok", "rm", "{}", ";"}, true},
+		{"okdir rm", []string{".", "-okdir", "rm", "{}", ";"}, true},
+		{"exec echo", []string{".", "-exec", "echo", "{}", ";"}, false},
+		{"no destructive", []string{".", "-name", "*.go"}, false},
+		{"empty", []string{}, false},
+		{"exec at end no next arg", []string{".", "-exec"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := findHasDestructiveAction(tt.args)
+			if got != tt.want {
+				t.Errorf("findHasDestructiveAction(%v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// argsHaveRecursiveFlag helper tests
+// ---------------------------------------------------------------------------
+
+func TestArgsHaveRecursiveFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"short R", []string{"-R", "root:root", "/"}, true},
+		{"long recursive", []string{"--recursive", "root:root", "/"}, true},
+		{"bundled vR", []string{"-vR", "root:root", "/"}, true},
+		{"bundled Rv", []string{"-Rv", "root:root", "/"}, true},
+		{"no recursive", []string{"-v", "root:root", "/"}, false},
+		{"empty", []string{}, false},
+		{"stops at --", []string{"--", "-R", "/"}, false},
+		{"stops at separator", []string{"&&", "-R", "/"}, false},
+		{"long flag not recursive", []string{"--verbose", "/"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := argsHaveRecursiveFlag(tt.args)
+			if got != tt.want {
+				t.Errorf("argsHaveRecursiveFlag(%v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}

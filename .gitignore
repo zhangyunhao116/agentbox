@@ -26,9 +26,11 @@
 /projectinit
 /projectscaffold
 /researchflow
+/ruleanalysis
 /sandbox-bench
 /security
 /timeout
+/trustlevel9
 /wrap
 
 # Windows executables

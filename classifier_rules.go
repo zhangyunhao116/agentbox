@@ -25,6 +25,8 @@ const (
 	flagList = "--list"
 	// flagRecursive is the long-form --recursive flag used in rule matching.
 	flagRecursive = "--recursive"
+	// flagForce is the long-form --force flag used in rule matching.
+	flagForce = "--force"
 	// cmdPython is the interpreter name used to exempt safe python pipe targets.
 	cmdPython = "python"
 	// cmdPython3 is the interpreter name used to exempt safe python3 pipe targets.
@@ -41,6 +43,10 @@ const (
 	cmdWget = "wget"
 	// cmdRedisCLI is the redis-cli command name used in database rules.
 	cmdRedisCLI = "redis-cli"
+	// cmdDocker is the docker command name used in container and build rules.
+	cmdDocker = "docker"
+	// cmdPodman is the podman command name used in container and build rules.
+	cmdPodman = "podman"
 	// subStash is the git stash subcommand name.
 	subStash = "stash"
 )

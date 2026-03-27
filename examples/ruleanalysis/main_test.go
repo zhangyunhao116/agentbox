@@ -8,11 +8,17 @@ import (
 	"github.com/zhangyunhao116/agentbox"
 )
 
+// testEntry is used to build JSON test datasets matching the expected format.
+type testEntry struct {
+	Command string `json:"command"`
+	Count   int    `json:"count"`
+}
+
 // TestScanDatasetSmall verifies that scanDataset correctly processes a small
 // synthetic dataset and produces the expected per-rule and per-decision stats.
 func TestScanDatasetSmall(t *testing.T) {
 	// Build a small JSON dataset with known classification outcomes.
-	entries := []entry{
+	entries := []testEntry{
 		{Command: "ls -la", Count: 100},             // Allow: common-safe-commands
 		{Command: "git status", Count: 50},           // Allow: git-read-commands
 		{Command: "rm -rf --no-preserve-root /", Count: 3}, // Forbidden: recursive-delete-root

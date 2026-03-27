@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **classifier**: `docker-build` rule now matches `podman build/push/pull` in addition to `docker` — consistent with `docker-container` and `docker-compose` rules that already handle podman
+- **classifier**: Deduplicated `Match`/`MatchArgs` logic across rules using shared helpers and `matchFields` closures — `serviceManagementRule`, `downloadToFileRule`, `gitStashDropRule`, `dockerBuildRule`, `recursiveDeleteRootRule`, `destructiveFindRule`, `recursivePermRootRule`
+- **classifier**: Allow rules now use typed `RuleName` constants and local result variables to reduce duplication
+- **classifier**: Extracted shared `pipeShells` list to eliminate duplication between `pipeToShellRule` and `containsPipeToShell`
+- **classifier**: Added `ScanEntriesProgress` to `examples/internal/dataset` for configurable progress output
+
+### Fixed
+
+- **classifier**: `recursive-perm-root` rule no longer false-positives on filenames containing `-R` as a substring (e.g., `chmod 644 file-README`) — now uses per-argument flag checking instead of `strings.Contains` on the full command string
+- **classifier**: `windowsSafeCommandsRule.MatchArgs` now correctly uses `baseCommand(name)` instead of raw `name` for PowerShell cmdlet and `$env:` checks — consistent with the `Match` handler
+
+### Changed
+
 - **classifier**: Merged `chmod-recursive-root` + `chown-recursive-root` into a single `recursive-perm-root` rule — both chmod and chown recursive permission changes on dangerous targets are now detected by one rule
 - **classifier**: Merged `curl-pipe-shell` + `base64-pipe-shell` into a single `pipe-to-shell` rule — all piping-to-shell patterns (curl/wget and base64-decoded content) are now detected by one rule
 - **classifier**: Split `docker-runtime` into three focused rules: `docker-container` (container lifecycle), `docker-compose` (compose commands), and `kubernetes` (kubectl operations)

@@ -10,6 +10,10 @@ import (
 	"strings"
 )
 
+// pipeShells is the canonical list of shell and interpreter names used to
+// detect dangerous pipe-to-shell patterns across multiple rules.
+var pipeShells = [...]string{"sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby", "node"}
+
 // baseCommand extracts the base name from a possibly path-qualified command.
 // Trailing slashes are stripped before extracting the base name.
 func baseCommand(cmd string) string {
@@ -91,7 +95,6 @@ func isDangerousDDTarget(arg string) bool {
 // backticks, or quotes are ignored. Python/python3 with -c or -m flags is
 // considered safe (inline code, not stdin eval).
 func containsPipeToShell(command string) bool {
-	shells := []string{"sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby", "node"}
 	parts := splitTopLevelPipes(command)
 	for _, part := range parts[1:] {
 		trimmed := strings.TrimSpace(part)
@@ -100,7 +103,7 @@ func containsPipeToShell(command string) bool {
 			continue
 		}
 		target := baseCommand(fields[0])
-		for _, sh := range shells {
+		for _, sh := range pipeShells {
 			if target == sh {
 				if (target == cmdPython || target == cmdPython3) && isPipeTargetSafePython(fields) {
 					continue
