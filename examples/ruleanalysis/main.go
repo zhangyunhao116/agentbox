@@ -2,7 +2,7 @@
 // dataset and produces a per-rule breakdown report grouped by decision level.
 //
 // The dataset is a JSON array of {"command": "...", "count": N} entries
-// (≈3.2M records, 373 MB). The file is streamed with encoding/json.Decoder
+// (≈3.2M records, 373 MB). The file is streamed via the dataset helper
 // so memory usage stays low regardless of file size.
 //
 // Usage:
@@ -12,7 +12,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -20,16 +19,10 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/zhangyunhao116/agentbox"
+	"github.com/zhangyunhao116/agentbox/examples/internal/dataset"
 )
-
-// entry mirrors a single object in the JSON dataset.
-type entry struct {
-	Command string `json:"command"`
-	Count   int    `json:"count"`
-}
 
 // commandSample records a matched command along with its occurrence count.
 type commandSample struct {
@@ -83,32 +76,12 @@ func run() error {
 func scanDataset(r io.Reader, topN int) (map[string]*ruleStats, map[agentbox.Decision]*decisionStats, error) {
 	classifier := agentbox.DefaultClassifier()
 
-	dec := json.NewDecoder(r)
-
-	// Consume the opening '['.
-	tok, err := dec.Token()
-	if err != nil {
-		return nil, nil, fmt.Errorf("read opening token: %w", err)
-	}
-	if delim, ok := tok.(json.Delim); !ok || delim != '[' {
-		return nil, nil, fmt.Errorf("expected JSON array, got %v", tok)
-	}
-
 	// ruleMap keys by rule name (or "sandboxed" for unmatched commands).
 	ruleMap := make(map[string]*ruleStats)
 	totals := make(map[agentbox.Decision]*decisionStats)
 
-	var totalCommands int
-	start := time.Now()
-
-	for dec.More() {
-		var e entry
-		if err := dec.Decode(&e); err != nil {
-			return nil, nil, fmt.Errorf("decode entry %d: %w", totalCommands+1, err)
-		}
-		totalCommands++
-
-		result := classifier.Classify(e.Command)
+	err := dataset.ScanEntries(r, func(command string, count int) error {
+		result := classifier.Classify(command)
 
 		// Determine the map key: rule name for matched rules, "sandboxed" for no match.
 		key := string(result.Rule)
@@ -125,8 +98,8 @@ func scanDataset(r io.Reader, topN int) (map[string]*ruleStats, map[agentbox.Dec
 			ruleMap[key] = rs
 		}
 		rs.Unique++
-		rs.TotalCount += e.Count
-		insertSample(rs, e.Command, e.Count, topN)
+		rs.TotalCount += count
+		insertSample(rs, command, count, topN)
 
 		// Accumulate per-decision totals.
 		ds := totals[result.Decision]
@@ -135,22 +108,13 @@ func scanDataset(r io.Reader, topN int) (map[string]*ruleStats, map[agentbox.Dec
 			totals[result.Decision] = ds
 		}
 		ds.Unique++
-		ds.TotalCount += e.Count
+		ds.TotalCount += count
 
-		// Progress indicator every 500k commands.
-		if totalCommands%500_000 == 0 {
-			elapsed := time.Since(start)
-			fmt.Fprintf(os.Stderr, "\r  scanned %dk commands (%s)...", totalCommands/1000, elapsed.Round(time.Millisecond))
-		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
 	}
-
-	// Consume the closing ']'.
-	if _, err := dec.Token(); err != nil && err != io.EOF {
-		return nil, nil, fmt.Errorf("read closing token: %w", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "\r") // clear progress line
-	fmt.Fprintf(os.Stderr, "  Done: scanned %d commands in %s\n", totalCommands, time.Since(start).Round(time.Millisecond))
 
 	return ruleMap, totals, nil
 }

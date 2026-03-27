@@ -70,7 +70,34 @@ func forkBombRule() rule {
 	}
 }
 
-//nolint:gocyclo // complexity is inherent to matching multiple rm flag combinations
+// rmHasRecursiveForce checks whether an rm argument list contains both a
+// recursive flag (-r, -R, or --recursive) and a force flag (-f or --force).
+// It stops scanning at "--" or any command separator.
+func rmHasRecursiveForce(args []string) bool {
+	hasRecursive := false
+	hasForce := false
+	for _, a := range args {
+		if a == "--" || isCommandSeparator(a) {
+			break
+		}
+		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
+			if strings.Contains(a, "r") || strings.Contains(a, "R") {
+				hasRecursive = true
+			}
+			if strings.Contains(a, "f") {
+				hasForce = true
+			}
+		}
+		if a == flagRecursive {
+			hasRecursive = true
+		}
+		if a == flagForce {
+			hasForce = true
+		}
+	}
+	return hasRecursive && hasForce
+}
+
 func recursiveDeleteRootRule() rule {
 	return rule{
 		Name: "recursive-delete-root",
@@ -82,31 +109,7 @@ func recursiveDeleteRootRule() rule {
 			if baseCommand(fields[0]) != "rm" {
 				return ClassifyResult{}, false
 			}
-			// Check for recursive+force flags.
-			// Stop at command separators — flags beyond a separator
-			// belong to a different command.
-			hasRecursive := false
-			hasForce := false
-			for _, f := range fields[1:] {
-				if f == "--" || isCommandSeparator(f) {
-					break
-				}
-				if strings.HasPrefix(f, "-") && !strings.HasPrefix(f, "--") {
-					if strings.Contains(f, "r") || strings.Contains(f, "R") {
-						hasRecursive = true
-					}
-					if strings.Contains(f, "f") {
-						hasForce = true
-					}
-				}
-				if f == flagRecursive {
-					hasRecursive = true
-				}
-				if f == "--force" {
-					hasForce = true
-				}
-			}
-			if !hasRecursive || !hasForce {
+			if !rmHasRecursiveForce(fields[1:]) {
 				return ClassifyResult{}, false
 			}
 			// Check for dangerous targets using path normalization.
@@ -131,28 +134,7 @@ func recursiveDeleteRootRule() rule {
 			if base != "rm" {
 				return ClassifyResult{}, false
 			}
-			hasRecursive := false
-			hasForce := false
-			for _, a := range args {
-				if a == "--" || isCommandSeparator(a) {
-					break
-				}
-				if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
-					if strings.Contains(a, "r") || strings.Contains(a, "R") {
-						hasRecursive = true
-					}
-					if strings.Contains(a, "f") {
-						hasForce = true
-					}
-				}
-				if a == flagRecursive {
-					hasRecursive = true
-				}
-				if a == "--force" {
-					hasForce = true
-				}
-			}
-			if !hasRecursive || !hasForce {
+			if !rmHasRecursiveForce(args) {
 				return ClassifyResult{}, false
 			}
 			for _, a := range args {
@@ -730,6 +712,27 @@ func rsArgsPerl(baseLower, lower string) (ClassifyResult, bool) {
 	return ClassifyResult{}, false
 }
 
+// argsHaveRecursiveFlag checks whether an argument list contains a recursive
+// flag (-R, bundled short flags containing R, or --recursive). It stops
+// scanning at "--" or any command separator.
+func argsHaveRecursiveFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--" || isCommandSeparator(a) {
+			break
+		}
+		if a == "-R" || a == flagRecursive {
+			return true
+		}
+		// Check for R in bundled short flags like -vR, -Rv.
+		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
+			if strings.Contains(a, "R") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // recursivePermRootRule detects recursive chmod or chown targeting dangerous
 // paths (root, home directory, etc.). This is a combined rule that replaces the
 // former chmod-recursive-root and chown-recursive-root rules.
@@ -751,8 +754,10 @@ func recursivePermRootRule() rule {
 			if !ok {
 				return ClassifyResult{}, false
 			}
-			cmd := strings.Join(fields, " ")
-			if !strings.Contains(cmd, "-R") && !strings.Contains(cmd, flagRecursive) {
+			// Check for recursive flag by iterating fields rather than
+			// using strings.Contains on the full string, which could
+			// false-positive on substrings like "file-README".
+			if !argsHaveRecursiveFlag(fields[1:]) {
 				return ClassifyResult{}, false
 			}
 			// Check for root or home targets. Stop at command separators.
@@ -775,21 +780,7 @@ func recursivePermRootRule() rule {
 			if !ok {
 				return ClassifyResult{}, false
 			}
-			hasRecursive := false
-			for _, a := range args {
-				if a == "--" || isCommandSeparator(a) {
-					break
-				}
-				if a == "-R" || a == flagRecursive {
-					hasRecursive = true
-				} else if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
-					// Check for R in bundled short flags like -vR, -Rv.
-					if strings.Contains(a, "R") {
-						hasRecursive = true
-					}
-				}
-			}
-			if !hasRecursive {
+			if !argsHaveRecursiveFlag(args) {
 				return ClassifyResult{}, false
 			}
 			for _, a := range args {
@@ -866,7 +857,6 @@ func checkFilesystemFormat(base string, args []string) (ClassifyResult, bool) {
 // base64-pipe-shell rules. It checks for both curl/wget piping to shells and
 // base64-decoded content piping to shells.
 func pipeToShellRule() rule {
-	shells := []string{"sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby", "node"}
 	const ruleName = "pipe-to-shell"
 
 	// matchCurlPipe checks for curl/wget output piped to a shell.
@@ -888,7 +878,7 @@ func pipeToShellRule() rule {
 				continue
 			}
 			target := baseCommand(fields[0])
-			for _, sh := range shells {
+			for _, sh := range pipeShells {
 				if target == sh {
 					// python/python3 with -c or -m is safe (inline code, not stdin eval).
 					if (target == cmdPython || target == cmdPython3) && isPipeTargetSafePython(fields) {
@@ -1276,6 +1266,23 @@ func historyExecRule() rule {
 	}
 }
 
+// findHasDestructiveAction checks whether a find argument list contains a
+// destructive action such as -delete or -exec/-execdir/-ok/-okdir invoking rm.
+func findHasDestructiveAction(args []string) bool {
+	for i, a := range args {
+		if a == "-delete" {
+			return true
+		}
+		if (a == "-exec" || a == "-execdir" || a == "-ok" || a == "-okdir") && i+1 < len(args) {
+			execCmd := baseCommand(args[i+1])
+			if execCmd == "rm" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func destructiveFindRule() rule {
 	return rule{
 		Name: "destructive-find",
@@ -1287,51 +1294,27 @@ func destructiveFindRule() rule {
 			if baseCommand(fields[0]) != "find" {
 				return ClassifyResult{}, false
 			}
-			for i, f := range fields {
-				if f == "-delete" {
-					return ClassifyResult{
-						Decision: Forbidden,
-						Reason:   "find with destructive action is forbidden",
-						Rule:     "destructive-find",
-					}, true
-				}
-				if (f == "-exec" || f == "-execdir" || f == "-ok" || f == "-okdir") && i+1 < len(fields) {
-					execCmd := baseCommand(fields[i+1])
-					if execCmd == "rm" {
-						return ClassifyResult{
-							Decision: Forbidden,
-							Reason:   "find with destructive action is forbidden",
-							Rule:     "destructive-find",
-						}, true
-					}
-				}
+			if !findHasDestructiveAction(fields) {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			return ClassifyResult{
+				Decision: Forbidden,
+				Reason:   "find with destructive action is forbidden",
+				Rule:     "destructive-find",
+			}, true
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			if baseCommand(name) != "find" || len(args) == 0 {
 				return ClassifyResult{}, false
 			}
-			for i, a := range args {
-				if a == "-delete" {
-					return ClassifyResult{
-						Decision: Forbidden,
-						Reason:   "find with destructive action is forbidden",
-						Rule:     "destructive-find",
-					}, true
-				}
-				if (a == "-exec" || a == "-execdir" || a == "-ok" || a == "-okdir") && i+1 < len(args) {
-					execCmd := baseCommand(args[i+1])
-					if execCmd == "rm" {
-						return ClassifyResult{
-							Decision: Forbidden,
-							Reason:   "find with destructive action is forbidden",
-							Rule:     "destructive-find",
-						}, true
-					}
-				}
+			if !findHasDestructiveAction(args) {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			return ClassifyResult{
+				Decision: Forbidden,
+				Reason:   "find with destructive action is forbidden",
+				Rule:     "destructive-find",
+			}, true
 		},
 	}
 }

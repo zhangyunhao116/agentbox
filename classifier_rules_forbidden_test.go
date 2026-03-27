@@ -201,6 +201,8 @@ func TestClassifierChmodRecursiveRoot(t *testing.T) {
 		// different command.
 		{"chmod then cd root", "chmod -R 755 ./src && ls /", Escalated},
 		{"chmod semicolon df root", "chmod -R 755 ./src; df /", Escalated},
+		// Regression: -R should not match as substring of unrelated tokens.
+		{"chmod file-README", "chmod 644 file-README", Escalated},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

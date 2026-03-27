@@ -1278,6 +1278,10 @@ func TestClassifierDockerRuntime(t *testing.T) {
 		{"docker build", "docker build .", Escalated, "docker-build"},
 		{"docker push", "docker push myimage", Escalated, "docker-build"},
 		{"docker pull", "docker pull ubuntu", Escalated, "docker-build"},
+		// podman build/push/pull → docker-build
+		{"podman build", "podman build -t myimage .", Escalated, "docker-build"},
+		{"podman push", "podman push myimage", Escalated, "docker-build"},
+		{"podman pull", "podman pull ubuntu", Escalated, "docker-build"},
 		// Read-only docker commands — should NOT match docker-container
 		{"docker ps", "docker ps", Sandboxed, ""},
 		{"docker images", "docker images", Sandboxed, ""},
@@ -1331,6 +1335,10 @@ func TestClassifierDockerRuntimeArgs(t *testing.T) {
 		{"kubectl scale", "kubectl", []string{"scale", "--replicas=3", "deployment/myapp"}, Escalated, "kubernetes"},
 		// docker build -> docker-build rule
 		{"docker build", "docker", []string{"build", "."}, Escalated, "docker-build"},
+		// podman build/push/pull → docker-build
+		{"podman build", "podman", []string{"build", "-t", "myimage", "."}, Escalated, "docker-build"},
+		{"podman push", "podman", []string{"push", "myimage"}, Escalated, "docker-build"},
+		{"podman pull", "podman", []string{"pull", "ubuntu"}, Escalated, "docker-build"},
 		// Negative
 		{"docker ps", "docker", []string{"ps"}, Sandboxed, ""},
 		{"docker no args", "docker", []string{}, Sandboxed, ""},

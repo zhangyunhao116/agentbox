@@ -384,6 +384,8 @@ func isPasswdStatusOnly(args []string) bool {
 	return hasStatus
 }
 
+// globalInstallRule escalates global package installations: npm -g, pip install
+// without --user, gem install, and similar commands that modify system-wide paths.
 func globalInstallRule() rule {
 	return rule{
 		Name: "global-install",
@@ -473,7 +475,7 @@ func dockerContainerRule() rule {
 		base := baseCommand(fields[0])
 
 		switch base {
-		case "docker", "podman":
+		case cmdDocker, cmdPodman:
 			if len(fields) < 2 {
 				return ClassifyResult{}, false
 			}
@@ -536,7 +538,7 @@ func dockerComposeRule() rule {
 		base := baseCommand(fields[0])
 
 		switch base {
-		case "docker", "podman":
+		case cmdDocker, cmdPodman:
 			// docker compose <subcmd>
 			if len(fields) < 3 {
 				return ClassifyResult{}, false
@@ -627,6 +629,8 @@ func kubernetesRule() rule {
 	}
 }
 
+// systemPackageInstallRule escalates system package manager install commands:
+// brew, apt, apt-get, yum, dnf, pacman, apk, zypper, and similar.
 func systemPackageInstallRule() rule {
 	// Map of package manager base command to the subcommand(s) that trigger escalation.
 	type pkgMgr struct {
@@ -902,80 +906,60 @@ func downloadToFileRule() rule {
 		"--output": true,
 	}
 
-	return rule{
-		Name: "download-to-file",
-		Match: func(command string) (ClassifyResult, bool) {
-			fields := strings.Fields(command)
-			if len(fields) == 0 {
-				return ClassifyResult{}, false
+	const reason = "file download requires approval"
+	const ruleName = "download-to-file"
+
+	// hasCurlDownloadFlag reports whether args contain a curl download flag
+	// (-o, -O, --output), including combined short flags like -Lo or -sOL.
+	hasCurlDownloadFlag := func(args []string) bool {
+		for _, a := range args {
+			if curlDownloadFlags[a] {
+				return true
 			}
-			base := baseCommand(fields[0])
-			if base == cmdWget {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "file download requires approval",
-					Rule:     "download-to-file",
-				}, true
-			}
-			if base == cmdCurl {
-				for _, f := range fields[1:] {
-					// Handle combined short flags like -sOL or -Lo
-					if curlDownloadFlags[f] {
-						return ClassifyResult{
-							Decision: Escalated,
-							Reason:   "file download requires approval",
-							Rule:     "download-to-file",
-						}, true
-					}
-					// Check for -o/O combined with other short flags (e.g. -Lo, -sOL).
-					if len(f) > 1 && f[0] == '-' && f[1] != '-' {
-						for _, ch := range f[1:] {
-							if ch == 'o' || ch == 'O' {
-								return ClassifyResult{
-									Decision: Escalated,
-									Reason:   "file download requires approval",
-									Rule:     "download-to-file",
-								}, true
-							}
-						}
+			// Check for -o/O combined with other short flags (e.g. -Lo, -sOL).
+			if len(a) > 1 && a[0] == '-' && a[1] != '-' {
+				for _, ch := range a[1:] {
+					if ch == 'o' || ch == 'O' {
+						return true
 					}
 				}
 			}
+		}
+		return false
+	}
+
+	matchFields := func(fields []string) (ClassifyResult, bool) {
+		if len(fields) == 0 {
 			return ClassifyResult{}, false
+		}
+		base := baseCommand(fields[0])
+		if base == cmdWget {
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   reason,
+				Rule:     ruleName,
+			}, true
+		}
+		if base == cmdCurl && hasCurlDownloadFlag(fields[1:]) {
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   reason,
+				Rule:     ruleName,
+			}, true
+		}
+		return ClassifyResult{}, false
+	}
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			return matchFields(strings.Fields(command))
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
-			base := baseCommand(name)
-			if base == cmdWget {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "file download requires approval",
-					Rule:     "download-to-file",
-				}, true
-			}
-			if base == cmdCurl {
-				for _, a := range args {
-					if curlDownloadFlags[a] {
-						return ClassifyResult{
-							Decision: Escalated,
-							Reason:   "file download requires approval",
-							Rule:     "download-to-file",
-						}, true
-					}
-					// Check combined short flags (e.g. -Lo, -sOL).
-					if len(a) > 1 && a[0] == '-' && a[1] != '-' {
-						for _, ch := range a[1:] {
-							if ch == 'o' || ch == 'O' {
-								return ClassifyResult{
-									Decision: Escalated,
-									Reason:   "file download requires approval",
-									Rule:     "download-to-file",
-								}, true
-							}
-						}
-					}
-				}
-			}
-			return ClassifyResult{}, false
+			fields := make([]string, 0, 1+len(args))
+			fields = append(fields, name)
+			fields = append(fields, args...)
+			return matchFields(fields)
 		},
 	}
 }
@@ -1021,73 +1005,56 @@ func serviceManagementRule() rule {
 		"config": true,
 	}
 
-	return rule{
-		Name: "service-management",
-		Match: func(command string) (ClassifyResult, bool) {
-			fields := strings.Fields(command)
-			if len(fields) == 0 {
+	const reason = "service management requires approval"
+	const ruleName = "service-management"
+
+	matchFields := func(fields []string) (ClassifyResult, bool) {
+		if len(fields) == 0 {
+			return ClassifyResult{}, false
+		}
+		base := baseCommand(fields[0])
+		args := fields[1:]
+		if directCmds[base] {
+			sub := serviceFirstSubcommand(args)
+			if base == "systemctl" && systemctlReadOnly[sub] {
 				return ClassifyResult{}, false
 			}
-			base := baseCommand(fields[0])
-			if directCmds[base] {
-				sub := serviceFirstSubcommand(fields[1:])
-				if base == "systemctl" && systemctlReadOnly[sub] {
-					return ClassifyResult{}, false
-				}
-				if base == "launchctl" && launchctlReadOnly[sub] {
-					return ClassifyResult{}, false
-				}
-				// "service <name> status" is read-only.
-				if base == "service" && isServiceStatusCmd(fields[1:]) {
-					return ClassifyResult{}, false
-				}
+			if base == "launchctl" && launchctlReadOnly[sub] {
+				return ClassifyResult{}, false
+			}
+			// "service <name> status" is read-only.
+			if base == "service" && isServiceStatusCmd(args) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   reason,
+				Rule:     ruleName,
+			}, true
+		}
+		// Windows sc.exe or sc with service subcommand.
+		if (base == "sc" || base == "sc.exe") && len(args) >= 1 {
+			if scSubs[strings.ToLower(args[0])] {
 				return ClassifyResult{
 					Decision: Escalated,
-					Reason:   "service management requires approval",
-					Rule:     "service-management",
+					Reason:   reason,
+					Rule:     ruleName,
 				}, true
 			}
-			// Windows sc.exe or sc with service subcommand.
-			if (base == "sc" || base == "sc.exe") && len(fields) >= 2 {
-				if scSubs[strings.ToLower(fields[1])] {
-					return ClassifyResult{
-						Decision: Escalated,
-						Reason:   "service management requires approval",
-						Rule:     "service-management",
-					}, true
-				}
-			}
-			return ClassifyResult{}, false
+		}
+		return ClassifyResult{}, false
+	}
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			return matchFields(strings.Fields(command))
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
-			base := baseCommand(name)
-			if directCmds[base] {
-				sub := serviceFirstSubcommand(args)
-				if base == "systemctl" && systemctlReadOnly[sub] {
-					return ClassifyResult{}, false
-				}
-				if base == "launchctl" && launchctlReadOnly[sub] {
-					return ClassifyResult{}, false
-				}
-				if base == "service" && isServiceStatusCmd(args) {
-					return ClassifyResult{}, false
-				}
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "service management requires approval",
-					Rule:     "service-management",
-				}, true
-			}
-			if (base == "sc" || base == "sc.exe") && len(args) >= 1 {
-				if scSubs[strings.ToLower(args[0])] {
-					return ClassifyResult{
-						Decision: Escalated,
-						Reason:   "service management requires approval",
-						Rule:     "service-management",
-					}, true
-				}
-			}
-			return ClassifyResult{}, false
+			fields := make([]string, 0, 1+len(args))
+			fields = append(fields, name)
+			fields = append(fields, args...)
+			return matchFields(fields)
 		},
 	}
 }
@@ -1224,6 +1191,9 @@ func filePermissionRule() rule {
 	}
 }
 
+// firewallManagementRule escalates firewall management commands: iptables,
+// ip6tables, ufw, nft, and firewall-cmd. Read-only flags (-L, --list, etc.)
+// are exempted.
 func firewallManagementRule() rule {
 	fwCmds := map[string]bool{
 		"iptables": true, "ip6tables": true, "ufw": true,
@@ -1371,6 +1341,8 @@ func isFirewallCmdReadOnly(args []string) bool {
 	return hasReadOnlyFlag
 }
 
+// networkScanRule escalates network scanning and packet capture tools:
+// nmap, tcpdump, tshark, wireshark, ettercap, and masscan.
 func networkScanRule() rule {
 	scanCmds := map[string]bool{
 		"nmap": true, "tcpdump": true, "tshark": true,
@@ -1412,6 +1384,9 @@ func networkScanRule() rule {
 	}
 }
 
+// databaseClientRule escalates interactive database client commands: mysql,
+// psql, sqlite3, redis-cli, mongo, and mongosh. Commands with --help or
+// --version are exempted. Note: -h is NOT exempted because psql uses -h for host.
 func databaseClientRule() rule {
 	// Interactive database client commands only.
 	dbCmds := map[string]bool{
@@ -1548,84 +1523,65 @@ func gitStashDropRule() rule {
 		"clear": true,
 	}
 
-	return rule{
-		Name: "git-stash-drop",
-		Match: func(command string) (ClassifyResult, bool) {
-			fields := strings.Fields(command)
-			if len(fields) < 3 {
-				return ClassifyResult{}, false
-			}
-			if baseCommand(fields[0]) != cmdGit {
-				return ClassifyResult{}, false
-			}
-			// Find the "stash" subcommand, skipping git global flags.
-			sub := findGitSubcommand(fields[1:])
-			if sub != subStash {
-				return ClassifyResult{}, false
-			}
-			// Find the stash sub-subcommand after "stash".
-			// Locate where "stash" appears and look at the next non-flag token.
-			foundStash := false
-			for _, f := range fields[1:] {
-				if !foundStash {
-					if strings.HasPrefix(f, "-") {
-						continue
-					}
-					if f == subStash {
-						foundStash = true
-						continue
-					}
-					break
-				}
-				// After "stash", skip flags to find the stash sub-subcommand.
+	const reason = "git stash drop/clear destroys stashed work and requires approval"
+	const ruleName = "git-stash-drop"
+
+	// findDestructiveStashSub looks for "stash" in fields, then returns true
+	// if the next non-flag token is a destructive stash sub-subcommand.
+	findDestructiveStashSub := func(fields []string) bool {
+		foundStash := false
+		for _, f := range fields {
+			if !foundStash {
 				if strings.HasPrefix(f, "-") {
 					continue
 				}
-				if destructiveStashSubs[f] {
-					return ClassifyResult{
-						Decision: Escalated,
-						Reason:   "git stash drop/clear destroys stashed work and requires approval",
-						Rule:     "git-stash-drop",
-					}, true
-				}
-				break
-			}
-			return ClassifyResult{}, false
-		},
-		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
-			if baseCommand(name) != cmdGit || len(args) < 2 {
-				return ClassifyResult{}, false
-			}
-			sub := findGitSubcommand(args)
-			if sub != subStash {
-				return ClassifyResult{}, false
-			}
-			// Find the stash sub-subcommand after "stash".
-			foundStash := false
-			for _, a := range args {
-				if !foundStash {
-					if strings.HasPrefix(a, "-") {
-						continue
-					}
-					if a == subStash {
-						foundStash = true
-						continue
-					}
-					break
-				}
-				if strings.HasPrefix(a, "-") {
+				if f == subStash {
+					foundStash = true
 					continue
 				}
-				if destructiveStashSubs[a] {
-					return ClassifyResult{
-						Decision: Escalated,
-						Reason:   "git stash drop/clear destroys stashed work and requires approval",
-						Rule:     "git-stash-drop",
-					}, true
-				}
 				break
 			}
+			// After "stash", skip flags to find the stash sub-subcommand.
+			if strings.HasPrefix(f, "-") {
+				continue
+			}
+			return destructiveStashSubs[f]
+		}
+		return false
+	}
+
+	matchFields := func(fields []string) (ClassifyResult, bool) {
+		if len(fields) < 3 {
 			return ClassifyResult{}, false
+		}
+		if baseCommand(fields[0]) != cmdGit {
+			return ClassifyResult{}, false
+		}
+		// Find the "stash" subcommand, skipping git global flags.
+		sub := findGitSubcommand(fields[1:])
+		if sub != subStash {
+			return ClassifyResult{}, false
+		}
+		if findDestructiveStashSub(fields[1:]) {
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   reason,
+				Rule:     ruleName,
+			}, true
+		}
+		return ClassifyResult{}, false
+	}
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			return matchFields(strings.Fields(command))
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			fields := make([]string, 0, 1+len(args))
+			fields = append(fields, name)
+			fields = append(fields, args...)
+			return matchFields(fields)
 		},
 	}
 }
@@ -1687,42 +1643,47 @@ func evalExecRule() rule {
 	}
 }
 
+// dockerBuildRule escalates Docker/Podman image lifecycle commands:
+// build, push, and pull. These are separated from dockerContainerRule because
+// they affect image registries rather than running containers.
 func dockerBuildRule() rule {
-	const cmdDocker = "docker"
-	return rule{
-		Name: "docker-build",
-		Match: func(command string) (ClassifyResult, bool) {
-			fields := strings.Fields(command)
-			if len(fields) < 2 {
-				return ClassifyResult{}, false
-			}
-			base := baseCommand(fields[0])
-			if base != cmdDocker {
-				return ClassifyResult{}, false
-			}
-			sub := fields[1]
-			if sub == "build" || sub == "push" || sub == "pull" {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "docker " + sub + " requires approval",
-					Rule:     "docker-build",
-				}, true
-			}
+	const ruleName = "docker-build"
+
+	buildSubs := map[string]bool{
+		"build": true,
+		"push":  true,
+		"pull":  true,
+	}
+
+	matchFields := func(fields []string) (ClassifyResult, bool) {
+		if len(fields) < 2 {
 			return ClassifyResult{}, false
+		}
+		base := baseCommand(fields[0])
+		if base != cmdDocker && base != cmdPodman {
+			return ClassifyResult{}, false
+		}
+		sub := fields[1]
+		if buildSubs[sub] {
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   base + " " + sub + " requires approval",
+				Rule:     ruleName,
+			}, true
+		}
+		return ClassifyResult{}, false
+	}
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			return matchFields(strings.Fields(command))
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
-			if baseCommand(name) != cmdDocker || len(args) == 0 {
-				return ClassifyResult{}, false
-			}
-			sub := args[0]
-			if sub == "build" || sub == "push" || sub == "pull" {
-				return ClassifyResult{
-					Decision: Escalated,
-					Reason:   "docker " + sub + " requires approval",
-					Rule:     "docker-build",
-				}, true
-			}
-			return ClassifyResult{}, false
+			fields := make([]string, 0, 1+len(args))
+			fields = append(fields, name)
+			fields = append(fields, args...)
+			return matchFields(fields)
 		},
 	}
 }
