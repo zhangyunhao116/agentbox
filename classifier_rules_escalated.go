@@ -80,7 +80,7 @@ func sudoRule() rule {
 				return ClassifyResult{}, false
 			}
 			cmd := baseCommand(fields[0])
-			if cmd == ruleSudo || cmd == "doas" {
+			if cmd == ruleSudo || cmd == cmdDoas {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "privilege escalation via sudo/doas requires approval",
@@ -91,7 +91,7 @@ func sudoRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			cmd := baseCommand(name)
-			if cmd == ruleSudo || cmd == "doas" {
+			if cmd == ruleSudo || cmd == cmdDoas {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "privilege escalation via sudo/doas requires approval",
@@ -147,6 +147,19 @@ var credentialSensitivePaths = []string{
 	".ssh/known_hosts",
 	".aws/credentials",
 	".aws/config",
+	".kube/config",
+	".docker/config.json",
+	".alibabacloud/",
+	".config/gcloud/",
+	".config/gh/hosts",
+	"/etc/shadow",
+	".bash_history",
+	".zsh_history",
+	".python_history",
+	".node_repl_history",
+	".mysql_history",
+	".psql_history",
+	".rediscli_history",
 	".npmrc",
 	".pypirc",
 	".netrc",
@@ -162,7 +175,9 @@ var credentialSensitivePaths = []string{
 var credentialSensitiveGlobs = []string{
 	"secret",
 	"credential",
+	"credentials",
 	"password",
+	"token",
 }
 
 // credentialSensitiveExtensions lists file extensions that indicate private
@@ -182,15 +197,22 @@ var credentialReaders = map[string]bool{
 // sensitive credential/secret file path.
 func isCredentialSensitivePath(arg string) bool {
 	lower := strings.ToLower(arg)
+	// SSH public key files (*.pub) are meant to be shared and are safe to
+	// read. Exclude them before checking sensitive path patterns so that
+	// e.g. "~/.ssh/id_ed25519.pub" is not flagged.
+	if strings.HasSuffix(lower, ".pub") {
+		return false
+	}
 	// Check known sensitive path substrings.
 	for _, p := range credentialSensitivePaths {
 		if strings.Contains(lower, p) {
 			return true
 		}
 	}
-	// Check ".env" as exact filename (base) to avoid matching ".environment".
+	// Check ".env" and ".env.*" variants (e.g. .env.local, .env.production)
+	// but exclude non-sensitive example/template files.
 	base := strings.ToLower(path.Base(arg))
-	if base == ".env" {
+	if base == ".env" || (strings.HasPrefix(base, ".env.") && !isEnvExampleFile(base)) {
 		return true
 	}
 	// Check word-boundary name patterns (secret, credential, password).
@@ -209,8 +231,27 @@ func isCredentialSensitivePath(arg string) bool {
 	return false
 }
 
+// envExampleSuffixes lists .env file suffixes that typically contain
+// placeholder values rather than real secrets.
+var envExampleSuffixes = []string{
+	"example", "sample", "template", "defaults", "dist",
+}
+
+// isEnvExampleFile reports whether a lowercased .env.* basename is a
+// non-sensitive example/template file (e.g. ".env.example", ".env.dist").
+func isEnvExampleFile(base string) bool {
+	// base is already lowercased and starts with ".env.".
+	suffix := base[len(".env."):]
+	for _, s := range envExampleSuffixes {
+		if suffix == s {
+			return true
+		}
+	}
+	return false
+}
+
 // envEnumCmds lists commands that print environment variables.
-var envEnumCmds = map[string]bool{"env": true, "printenv": true}
+var envEnumCmds = map[string]bool{cmdEnv: true, "printenv": true}
 
 // credGrepPatterns are substrings that indicate credential enumeration
 // when used as a grep argument after env/printenv.
@@ -643,6 +684,9 @@ func systemPackageInstallRule() rule {
 		{"apt-get", []string{"install"}},
 		{"yum", []string{"install"}},
 		{"dnf", []string{"install"}},
+		{"winget", []string{"install", "upgrade", "uninstall"}},
+		{"choco", []string{"install", "upgrade", "uninstall"}},
+		{"scoop", []string{"install", "update", "uninstall"}},
 	}
 
 	return rule{
@@ -911,8 +955,16 @@ func downloadToFileRule() rule {
 
 	// hasCurlDownloadFlag reports whether args contain a curl download flag
 	// (-o, -O, --output), including combined short flags like -Lo or -sOL.
+	// Only the curl segment is examined: scanning stops at the first pipe or
+	// command separator so that flags from downstream commands (e.g. grep -o)
+	// are not mistaken for curl download flags.
 	hasCurlDownloadFlag := func(args []string) bool {
 		for _, a := range args {
+			// Stop at pipe / command separator — anything after belongs
+			// to a different command.
+			if isCommandSeparator(a) {
+				return false
+			}
 			if curlDownloadFlags[a] {
 				return true
 			}
@@ -976,17 +1028,17 @@ func serviceManagementRule() rule {
 
 	// Read-only systemctl subcommands that should not be escalated.
 	systemctlReadOnly := map[string]bool{
-		"status":              true,
-		"is-active":           true,
-		"is-enabled":          true,
-		"is-failed":           true,
-		"show":                true,
-		"list-units":          true,
-		"list-unit-files":     true,
-		"list-timers":         true,
-		"list-sockets":        true,
-		"list-dependencies":   true,
-		"cat":                 true,
+		"status":            true,
+		"is-active":         true,
+		"is-enabled":        true,
+		"is-failed":         true,
+		"show":              true,
+		"list-units":        true,
+		"list-unit-files":   true,
+		"list-timers":       true,
+		"list-sockets":      true,
+		"list-dependencies": true,
+		"cat":               true,
 	}
 
 	// Read-only launchctl subcommands.
@@ -1106,6 +1158,11 @@ func crontabAtRule() rule {
 			if base == "crontab" && isCrontabListOnly(stripFieldsRedirectsAndPipes(fields[1:])) {
 				return ClassifyResult{}, false
 			}
+			// at -c displays the contents of a scheduled job (read-only);
+			// skip escalation.
+			if base == "at" && isAtCatOnly(stripFieldsRedirectsAndPipes(fields[1:])) {
+				return ClassifyResult{}, false
+			}
 			return ClassifyResult{
 				Decision: Escalated,
 				Reason:   "scheduled task management requires approval",
@@ -1118,6 +1175,9 @@ func crontabAtRule() rule {
 				return ClassifyResult{}, false
 			}
 			if base == "crontab" && isCrontabListOnly(args) {
+				return ClassifyResult{}, false
+			}
+			if base == "at" && isAtCatOnly(args) {
 				return ClassifyResult{}, false
 			}
 			return ClassifyResult{
@@ -1152,6 +1212,26 @@ func isCrontabListOnly(args []string) bool {
 		}
 	}
 	return hasList
+}
+
+// isAtCatOnly reports whether args represent a read-only "at -c" invocation.
+// "at -c <jobid>" displays the contents of a scheduled job without modifying
+// anything. The -c flag must be the only flag; an optional numeric job ID is
+// allowed.
+func isAtCatOnly(args []string) bool {
+	hasCat := false
+	for _, a := range args {
+		switch {
+		case a == "-c":
+			hasCat = true
+		case strings.HasPrefix(a, "-"):
+			// Any other flag (e.g. -f, -m) means this is NOT read-only.
+			return false
+		default:
+			// Non-flag argument (e.g. job ID) — allowed.
+		}
+	}
+	return hasCat
 }
 
 // filePermissionRule matches chmod, chown, and chgrp commands that are NOT
@@ -1316,9 +1396,9 @@ func isIptablesListOnly(args []string) bool {
 
 // firewallCmdReadOnlyFlags are firewall-cmd flags that indicate read-only queries.
 var firewallCmdReadOnlyFlags = map[string]bool{
-	"--list-all":        true,
-	"--list-all-zones":  true,
-	"--state":           true,
+	"--list-all":         true,
+	"--list-all-zones":   true,
+	"--state":            true,
 	"--get-active-zones": true,
 }
 
@@ -1684,6 +1764,313 @@ func dockerBuildRule() rule {
 			fields = append(fields, name)
 			fields = append(fields, args...)
 			return matchFields(fields)
+		},
+	}
+}
+
+// packageInstallCmds maps base command names to their install subcommands for
+// local package installation detection. Global installs are handled by the
+// higher-priority global-install rule.
+var packageInstallCmds = map[string]map[string]bool{
+	"pip":      {"install": true, "uninstall": true},
+	"pip3":     {"install": true, "uninstall": true},
+	"npm":      {"install": true, "i": true, "add": true, "ci": true},
+	"yarn":     {"install": true, "add": true},
+	"pnpm":     {"install": true, "add": true, "i": true},
+	"cargo":    {"install": true},
+	"go":       {"install": true},
+	"gem":      {"install": true},
+	"composer": {"install": true, "require": true},
+	"conda":    {"install": true},
+}
+
+// isPythonLauncher reports whether base is a Python interpreter name:
+// python, python3, python3.X (any minor version), or py (Windows launcher).
+func isPythonLauncher(base string) bool {
+	if base == "python" || base == "python3" || base == "py" {
+		return true
+	}
+	// Match python3.X where X is one or more digits (e.g. python3.11).
+	if strings.HasPrefix(base, "python3.") {
+		suffix := base[len("python3."):]
+		if len(suffix) > 0 {
+			for _, c := range suffix {
+				if c < '0' || c > '9' {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// matchPythonMPip checks whether fields represent a "python -m pip install/uninstall"
+// invocation. The py launcher may have version flags like -3.11 before -m.
+func matchPythonMPip(fields []string, ruleName RuleName, reason string) (ClassifyResult, bool) {
+	// Walk fields[1:] looking for -m; skip flags like -3.11, -u, etc.
+	mIdx := -1
+	for i := 1; i < len(fields); i++ {
+		if fields[i] == "-m" {
+			mIdx = i
+			break
+		}
+	}
+	if mIdx < 0 || mIdx+1 >= len(fields) {
+		return ClassifyResult{}, false
+	}
+	pipCmd := fields[mIdx+1]
+	if pipCmd != "pip" && pipCmd != "pip3" {
+		return ClassifyResult{}, false
+	}
+	// The subcommand after pip/pip3 must be install or uninstall.
+	if mIdx+2 >= len(fields) {
+		return ClassifyResult{}, false
+	}
+	sub := fields[mIdx+2]
+	if sub == "install" || sub == "uninstall" {
+		return ClassifyResult{
+			Decision: Escalated,
+			Reason:   reason,
+			Rule:     ruleName,
+		}, true
+	}
+	return ClassifyResult{}, false
+}
+
+// packageInstallRule escalates local package installation commands that modify
+// the project or user environment. System-level and global installs are caught
+// by higher-priority rules (system-package-install, global-install).
+func packageInstallRule() rule {
+	const ruleName = "package-install"
+	const reason = "package installation modifies the environment"
+
+	matchFields := func(fields []string) (ClassifyResult, bool) {
+		if len(fields) < 2 {
+			return ClassifyResult{}, false
+		}
+		base := baseCommand(fields[0])
+
+		// Special case: python -m pip install / uninstall.
+		// Matches python, python3, python3.X, and py (Windows launcher).
+		if isPythonLauncher(base) {
+			if r, ok := matchPythonMPip(fields, ruleName, reason); ok {
+				return r, true
+			}
+		}
+
+		subs, ok := packageInstallCmds[base]
+		if !ok {
+			return ClassifyResult{}, false
+		}
+		if subs[fields[1]] {
+			return ClassifyResult{
+				Decision: Escalated,
+				Reason:   reason,
+				Rule:     ruleName,
+			}, true
+		}
+		return ClassifyResult{}, false
+	}
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			return matchFields(strings.Fields(command))
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			fields := make([]string, 0, 1+len(args))
+			fields = append(fields, name)
+			fields = append(fields, args...)
+			return matchFields(fields)
+		},
+	}
+}
+
+// backgroundProcessCmds is the set of commands that launch background processes.
+var backgroundProcessCmds = map[string]bool{
+	"nohup": true, "disown": true,
+}
+
+// backgroundProcessRule escalates commands that run processes in the background:
+// nohup, trailing &, disown, screen, and tmux new-session.
+func backgroundProcessRule() rule {
+	const ruleName = "background-process"
+	const reason = "background process execution requires approval"
+	result := ClassifyResult{
+		Decision: Escalated,
+		Reason:   reason,
+		Rule:     ruleName,
+	}
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			fields := strings.Fields(command)
+			if len(fields) == 0 {
+				return ClassifyResult{}, false
+			}
+			if isBackgroundCommand(fields, command) {
+				return result, true
+			}
+			return ClassifyResult{}, false
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			base := baseCommand(name)
+			if backgroundProcessCmds[base] {
+				return result, true
+			}
+			for _, a := range args {
+				if a == "disown" {
+					return result, true
+				}
+			}
+			if isScreenOrTmuxSession(base, args) {
+				return result, true
+			}
+			// Trailing & in args.
+			if len(args) > 0 && args[len(args)-1] == "&" {
+				return result, true
+			}
+			return ClassifyResult{}, false
+		},
+	}
+}
+
+// isBackgroundCommand checks whether the parsed fields or raw command string
+// indicate a background process launch (nohup, disown, screen, tmux, trailing &).
+func isBackgroundCommand(fields []string, command string) bool {
+	base := baseCommand(fields[0])
+
+	if backgroundProcessCmds[base] {
+		return true
+	}
+	for _, f := range fields[1:] {
+		if f == "disown" {
+			return true
+		}
+	}
+	if isScreenOrTmuxSession(base, fields[1:]) {
+		return true
+	}
+	return hasTrailingAmpersand(command)
+}
+
+// isScreenOrTmuxSession reports whether the base command and args indicate a
+// screen or tmux session creation.
+func isScreenOrTmuxSession(base string, args []string) bool {
+	if base == "screen" && len(args) > 0 {
+		return true
+	}
+	if base == "tmux" && len(args) > 0 {
+		return args[0] == "new-session" || args[0] == "new"
+	}
+	return false
+}
+
+// hasTrailingAmpersand reports whether the command ends with a single &
+// (background operator), not && (logical AND).
+func hasTrailingAmpersand(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	if len(trimmed) == 0 || trimmed[len(trimmed)-1] != '&' {
+		return false
+	}
+	return len(trimmed) < 2 || trimmed[len(trimmed)-2] != '&'
+}
+
+// inPlaceEditRule escalates in-place file editing commands: sed -i and perl -i.
+// Plain sed (without -i) is handled by the allow text-processing rule.
+func inPlaceEditRule() rule {
+	const ruleName = "in-place-edit"
+	const reason = "in-place file editing requires approval"
+	result := ClassifyResult{
+		Decision: Escalated,
+		Reason:   reason,
+		Rule:     ruleName,
+	}
+
+	checkInPlace := func(base string, args []string) bool {
+		switch base {
+		case "sed":
+			return hasSedInPlaceFlag(args)
+		case "perl":
+			for _, a := range args {
+				if a == "-i" || a == "-pi" || a == "-ip" {
+					return true
+				}
+				// -i.bak or -pi.bak style (suffix after -i/-pi).
+				if len(a) > 2 && a[:2] == "-i" && a[2] != '-' {
+					return true
+				}
+				if len(a) > 3 && a[:3] == "-pi" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			fields := strings.Fields(command)
+			if len(fields) < 2 {
+				return ClassifyResult{}, false
+			}
+			base := baseCommand(fields[0])
+			if checkInPlace(base, fields[1:]) {
+				return result, true
+			}
+			return ClassifyResult{}, false
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			base := baseCommand(name)
+			if checkInPlace(base, args) {
+				return result, true
+			}
+			return ClassifyResult{}, false
+		},
+	}
+}
+
+// containerEscapeRule escalates commands that can manipulate namespaces or
+// change the root filesystem: nsenter, chroot, unshare. These are commonly
+// used for container escapes and privilege boundary changes.
+func containerEscapeRule() rule {
+	const ruleName = "container-escape"
+	cmds := map[string]bool{
+		"nsenter": true, "chroot": true, "unshare": true,
+	}
+	result := ClassifyResult{
+		Decision: Escalated,
+		Reason:   "namespace/chroot manipulation requires approval",
+		Rule:     ruleName,
+	}
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			fields := strings.Fields(command)
+			if len(fields) == 0 {
+				return ClassifyResult{}, false
+			}
+			base := baseCommand(fields[0])
+			if !cmds[base] {
+				return ClassifyResult{}, false
+			}
+			if escalatedHasInfoFlag(fields[1:]) {
+				return ClassifyResult{}, false
+			}
+			return result, true
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			base := baseCommand(name)
+			if !cmds[base] {
+				return ClassifyResult{}, false
+			}
+			if escalatedHasInfoFlag(args) {
+				return ClassifyResult{}, false
+			}
+			return result, true
 		},
 	}
 }

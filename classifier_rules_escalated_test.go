@@ -15,11 +15,11 @@ func TestClassifierGlobalInstall(t *testing.T) {
 		{"npm install -g", "npm install -g typescript", Escalated},
 		{"npm i -g", "npm i -g typescript", Escalated},
 		{"yarn global add", "yarn global add typescript", Escalated},
-		{"pip install", "pip install requests", Sandboxed},
-		{"pip3 install", "pip3 install requests", Sandboxed},
-		{"pip install --user", "pip install --user requests", Sandboxed},
-		{"pip install venv", "pip install -r requirements.txt venv", Sandboxed},
-		{"npm install local", "npm install typescript", Sandboxed},
+		{"pip install", "pip install requests", Escalated},
+		{"pip3 install", "pip3 install requests", Escalated},
+		{"pip install --user", "pip install --user requests", Escalated},
+		{"pip install venv", "pip install -r requirements.txt venv", Escalated},
+		{"npm install local", "npm install typescript", Escalated},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -27,8 +27,8 @@ func TestClassifierGlobalInstall(t *testing.T) {
 			if r.Decision != tt.want {
 				t.Errorf("Classify(%q) = %v, want %v", tt.cmd, r.Decision, tt.want)
 			}
-			if r.Decision == Escalated && r.Rule != "global-install" {
-				t.Errorf("expected rule global-install, got %q", r.Rule)
+			if r.Decision == Escalated && r.Rule != "global-install" && r.Rule != "package-install" {
+				t.Errorf("expected rule global-install or package-install, got %q", r.Rule)
 			}
 		})
 	}
@@ -45,14 +45,14 @@ func TestClassifierGlobalInstallArgs(t *testing.T) {
 		{"npm install -g", "npm", []string{"install", "-g", "typescript"}, Escalated},
 		{"npm i --global", "npm", []string{"i", "--global", "typescript"}, Escalated},
 		{"yarn global add", "yarn", []string{"global", "add", "typescript"}, Escalated},
-		{"pip install", "pip", []string{"install", "requests"}, Sandboxed},
-		{"pip3 install", "pip3", []string{"install", "requests"}, Sandboxed},
-		{"pip install --user", "pip", []string{"install", "--user", "requests"}, Sandboxed},
-		{"npm install local", "npm", []string{"install", "typescript"}, Sandboxed},
+		{"pip install", "pip", []string{"install", "requests"}, Escalated},
+		{"pip3 install", "pip3", []string{"install", "requests"}, Escalated},
+		{"pip install --user", "pip", []string{"install", "--user", "requests"}, Escalated},
+		{"npm install local", "npm", []string{"install", "typescript"}, Escalated},
 		{"not npm", "echo", []string{"install", "-g"}, Allow},
 		{"npm no args", "npm", []string{}, Sandboxed},
 		{"pip no args", "pip", []string{}, Sandboxed},
-		{"yarn not global", "yarn", []string{"add", "typescript"}, Sandboxed},
+		{"yarn not global", "yarn", []string{"add", "typescript"}, Escalated},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -125,6 +125,23 @@ func TestClassifierSystemPackageInstall(t *testing.T) {
 		{"apt-get install", "apt-get install curl", Escalated},
 		{"yum install", "yum install curl", Escalated},
 		{"dnf install", "dnf install curl", Escalated},
+		{"winget install", "winget install ubuntu", Escalated},
+		{"winget upgrade", "winget upgrade --all", Escalated},
+		{"winget uninstall", "winget uninstall ubuntu", Escalated},
+		{"winget list not escalated", "winget list", Sandboxed},
+		// choco (Chocolatey) package manager (BUG-50K-3).
+		{"choco install", "choco install nodejs22 -y", Escalated},
+		{"choco upgrade", "choco upgrade all", Escalated},
+		{"choco uninstall", "choco uninstall nodejs", Escalated},
+		{"choco list not escalated", "choco list", Sandboxed},
+		// scoop package manager (BUG-50K-3).
+		{"scoop install", "scoop install git", Escalated},
+		{"scoop update", "scoop update git", Escalated},
+		{"scoop uninstall", "scoop uninstall git", Escalated},
+		{"scoop list not escalated", "scoop list", Sandboxed},
+		// Windows .exe suffix for package managers (BUG-50K-2).
+		{"choco.exe install", "choco.exe install nodejs", Escalated},
+		{"winget.exe install", "winget.exe install ubuntu", Escalated},
 		{"brew update", "brew update", Sandboxed},
 		{"apt update", "apt update", Sandboxed},
 		{"brew alone", "brew", Sandboxed},
@@ -155,6 +172,17 @@ func TestClassifierSystemPackageInstallArgs(t *testing.T) {
 		{"apt-get install", "apt-get", []string{"install", "curl"}, Escalated},
 		{"yum install", "yum", []string{"install", "curl"}, Escalated},
 		{"dnf install", "dnf", []string{"install", "curl"}, Escalated},
+		{"winget install args", "winget", []string{"install", "ubuntu"}, Escalated},
+		{"winget upgrade args", "winget", []string{"upgrade", "--all"}, Escalated},
+		{"winget uninstall args", "winget", []string{"uninstall", "ubuntu"}, Escalated},
+		// choco ClassifyArgs (BUG-50K-3).
+		{"choco install args", "choco", []string{"install", "nodejs"}, Escalated},
+		{"choco upgrade args", "choco", []string{"upgrade", "all"}, Escalated},
+		{"choco uninstall args", "choco", []string{"uninstall", "nodejs"}, Escalated},
+		// scoop ClassifyArgs (BUG-50K-3).
+		{"scoop install args", "scoop", []string{"install", "git"}, Escalated},
+		{"scoop update args", "scoop", []string{"update", "git"}, Escalated},
+		{"scoop uninstall args", "scoop", []string{"uninstall", "git"}, Escalated},
 		{"brew update", "brew", []string{"update"}, Sandboxed},
 		{"brew no args", "brew", []string{}, Sandboxed},
 		{"not brew", "echo", []string{"install"}, Allow},
@@ -170,34 +198,37 @@ func TestClassifierSystemPackageInstallArgs(t *testing.T) {
 }
 func TestClassifierGlobalInstallPipVirtualenv(t *testing.T) {
 	c := DefaultClassifier()
-	// pip install with virtualenv keyword should not be escalated
+	// pip install with virtualenv keyword is now escalated by package-install rule
 	r := c.Classify("pip install -r requirements.txt virtualenv")
-	if r.Decision == Escalated {
-		t.Error("pip install with virtualenv should not be escalated")
+	if r.Decision != Escalated {
+		t.Errorf("pip install should be escalated, got %v", r.Decision)
 	}
 }
 
 func TestClassifierGlobalInstallPip3User(t *testing.T) {
 	c := DefaultClassifier()
+	// pip3 install --user is now escalated by package-install rule
 	r := c.Classify("pip3 install --user requests")
-	if r.Decision == Escalated {
-		t.Error("pip3 install --user should not be escalated")
+	if r.Decision != Escalated {
+		t.Errorf("pip3 install --user should be escalated, got %v", r.Decision)
 	}
 }
 
 func TestClassifierGlobalInstallArgsVirtualenv(t *testing.T) {
 	c := DefaultClassifier()
+	// pip install virtualenv is now escalated by package-install rule
 	r := c.ClassifyArgs("pip", []string{"install", "virtualenv"})
-	if r.Decision == Escalated {
-		t.Error("pip install virtualenv should not be escalated")
+	if r.Decision != Escalated {
+		t.Errorf("pip install virtualenv should be escalated, got %v", r.Decision)
 	}
 }
 
 func TestClassifierGlobalInstallArgsYarnNotGlobal(t *testing.T) {
 	c := DefaultClassifier()
+	// yarn add is now escalated by package-install rule (local install)
 	r := c.ClassifyArgs("yarn", []string{"add", "typescript"})
-	if r.Decision == Escalated {
-		t.Error("yarn add (not global) should not be escalated")
+	if r.Decision != Escalated {
+		t.Errorf("yarn add should be escalated, got %v", r.Decision)
 	}
 }
 
@@ -665,10 +696,22 @@ func TestClassifierDownloadToFile(t *testing.T) {
 		{"curl --output", "curl --output file.txt https://example.com", Escalated},
 		{"curl -Lo", "curl -Lo file https://example.com/file", Escalated},
 		{"curl -sOL", "curl -sOL https://example.com/file", Escalated},
+		// Windows .exe suffix: curl.exe should match (BUG-50K-5).
+		{"curl.exe -o", "curl.exe -o output.txt https://example.com", Escalated},
+		{"curl.exe -O", "curl.exe -O https://example.com/file.tar.gz", Escalated},
 		// Negative: curl without download flags is NOT escalated
 		{"curl api", "curl https://api.example.com/data", Sandboxed},
 		{"curl -s", "curl -s https://api.example.com/health", Sandboxed},
 		{"curl -X POST", "curl -X POST https://api.example.com/data", Sandboxed},
+		// Negative: piped curl where downstream command has -o/-O must not
+		// be confused for curl download flags (BUG 4 regression).
+		{"curl pipe grep -o", "curl -s https://example.com | grep -o pattern", Sandboxed},
+		{"curl pipe grep -O", "curl -s https://example.com | grep -O pattern", Sandboxed},
+		{"curl pipe awk", "curl https://api.example.com | awk '{print $1}'", Sandboxed},
+		{"curl pipe head", "curl -s https://api.example.com | head -20", Sandboxed},
+		{"curl pipe jq", "curl -s https://api.example.com/data | jq .name", Sandboxed},
+		{"curl && grep -o", "curl -s https://example.com && grep -o pattern file", Sandboxed},
+		{"curl semicolon grep -o", "curl -s https://example.com ; grep -o pattern file", Sandboxed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -814,6 +857,13 @@ func TestClassifierCrontabAt(t *testing.T) {
 		{"crontab list", "crontab -l", Sandboxed},
 		{"crontab list user", "crontab -l -u root", Sandboxed},
 		{"crontab -u list", "crontab -u admin -l", Sandboxed},
+		// Read-only: at -c displays job contents, not modify (BUG 5 regression).
+		{"at -c job", "at -c 5", Sandboxed},
+		{"at -c bare", "at -c", Sandboxed},
+		{"at -c large id", "at -c 12345", Sandboxed},
+		// at with other flags should still be escalated.
+		{"at -f schedule", "at -f script.sh now", Escalated},
+		{"at -m schedule", "at -m 10:00", Escalated},
 		// Negative
 		{"echo crontab", "echo crontab", Allow},
 		{"cat crontab", "cat /etc/crontab", Allow},
@@ -846,6 +896,9 @@ func TestClassifierCrontabAtArgs(t *testing.T) {
 		// Read-only: crontab -l should NOT be escalated.
 		{"crontab -l", "crontab", []string{"-l"}, Sandboxed},
 		{"crontab -l -u root", "crontab", []string{"-l", "-u", "root"}, Sandboxed},
+		// Read-only: at -c should NOT be escalated (BUG 5 regression).
+		{"at -c", "at", []string{"-c", "5"}, Sandboxed},
+		{"at -c bare", "at", []string{"-c"}, Sandboxed},
 		// Negative
 		{"echo", "echo", []string{"crontab"}, Allow},
 	}
@@ -885,6 +938,27 @@ func TestClassifierCredentialAccess(t *testing.T) {
 		{"cat netrc", "cat ~/.netrc", Escalated},
 		{"cat my.cnf", "cat ~/.my.cnf", Escalated},
 		{"cat aws config", "cat ~/.aws/config", Escalated},
+		// New sensitive paths — cloud, container, CLI, system, history
+		{"cat alibabacloud creds", "cat ~/.alibabacloud/credentials", Escalated},
+		{"cat gcloud creds", "cat ~/.config/gcloud/credentials.db", Escalated},
+		{"cat kube config", "cat ~/.kube/config", Escalated},
+		{"cat docker config", "cat ~/.docker/config.json", Escalated},
+		{"cat gh hosts", "cat ~/.config/gh/hosts.yml", Escalated},
+		{"cat shadow", "cat /etc/shadow", Escalated},
+		{"cat bash history", "cat ~/.bash_history", Escalated},
+		{"cat zsh history", "cat ~/.zsh_history", Escalated},
+		{"head credentials file", "head -20 ~/.alibabacloud/credentials", Escalated},
+		// .env.* variants — should be Escalated
+		{"cat dotenv local", "cat /path/.env.local", Escalated},
+		{"cat dotenv production", "cat .env.production", Escalated},
+		{"cat dotenv development", "cat .env.development", Escalated},
+		{"cat dotenv sit", "cat .env.sit", Escalated},
+		{"cat dotenv deploy", "cat .env.deploy", Escalated},
+		// .env.* variants — example files should NOT trigger
+		{"cat dotenv example", "cat .env.example", Allow},
+		{"cat dotenv sample", "cat .env.sample", Allow},
+		{"cat dotenv template", "cat .env.template", Allow},
+		{"cat dotenv dist", "cat .env.dist", Allow},
 		// Negative cases — should NOT trigger
 		{"cat readme", "cat README.md", Allow},
 		{"echo env var", "echo $SECRET_KEY", Allow},
@@ -917,6 +991,10 @@ func TestClassifierCredentialAccessArgs(t *testing.T) {
 		{"head dotenv", "head", []string{"-n", "10", ".env"}, Escalated},
 		{"tail pem", "tail", []string{"cert.pem"}, Escalated},
 		{"cat key", "cat", []string{"private.key"}, Escalated},
+		// .env.* variants
+		{"cat dotenv local", "cat", []string{"/path/.env.local"}, Escalated},
+		{"head dotenv production", "head", []string{"-n", "5", ".env.production"}, Escalated},
+		{"cat dotenv example", "cat", []string{".env.example"}, Allow},
 		// Negative
 		{"cat readme", "cat", []string{"README.md"}, Allow},
 		{"echo env", "echo", []string{"$SECRET"}, Allow},
@@ -1179,7 +1257,7 @@ func TestClassifierNetworkScan(t *testing.T) {
 		{"masscan", "masscan 10.0.0.0/8 -p80", Escalated},
 		{"path-qualified nmap", "/usr/bin/nmap -sV 10.0.0.1", Escalated},
 		// Negative cases
-		{"ping", "ping 8.8.8.8", Sandboxed},
+		{"ping", "ping 8.8.8.8", Allow},
 		{"curl", "curl http://example.com", Sandboxed},
 		{"echo nmap", "echo nmap", Allow},
 	}
@@ -1209,7 +1287,7 @@ func TestClassifierNetworkScanArgs(t *testing.T) {
 		{"tshark", "tshark", []string{"-i", "eth0"}, Escalated},
 		{"masscan", "masscan", []string{"10.0.0.0/8", "-p80"}, Escalated},
 		// Negative
-		{"ping", "ping", []string{"8.8.8.8"}, Sandboxed},
+		{"ping", "ping", []string{"8.8.8.8"}, Allow},
 		{"echo", "echo", []string{"nmap"}, Allow},
 	}
 	for _, tt := range tests {
@@ -1692,6 +1770,20 @@ func TestIsCredentialSensitivePath(t *testing.T) {
 		// Word-boundary positive: token delimited by _, -, or .
 		{"my_secret_config.yml", true},
 		{"app-secret.json", true},
+		// .env.* variants — sensitive
+		{".env.local", true},
+		{".env.development", true},
+		{".env.production", true},
+		{".env.sit", true},
+		{".env.deploy", true},
+		{"/app/.env.local", true},
+		{"/home/user/project/.env.production", true},
+		// .env.* variants — non-sensitive (example/template files)
+		{".env.example", false},
+		{".env.sample", false},
+		{".env.template", false},
+		{".env.defaults", false},
+		{".env.dist", false},
 		// Negative
 		{"README.md", false},
 		{".environment", false},
@@ -1708,6 +1800,38 @@ func TestIsCredentialSensitivePath(t *testing.T) {
 			got := isCredentialSensitivePath(tt.arg)
 			if got != tt.want {
 				t.Errorf("isCredentialSensitivePath(%q) = %v, want %v", tt.arg, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isEnvExampleFile helper tests
+// ---------------------------------------------------------------------------
+
+func TestIsEnvExampleFile(t *testing.T) {
+	tests := []struct {
+		base string
+		want bool
+	}{
+		{".env.example", true},
+		{".env.sample", true},
+		{".env.template", true},
+		{".env.defaults", true},
+		{".env.dist", true},
+		// Non-example suffixes
+		{".env.local", false},
+		{".env.development", false},
+		{".env.production", false},
+		{".env.sit", false},
+		{".env.deploy", false},
+		{".env.staging", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.base, func(t *testing.T) {
+			got := isEnvExampleFile(tt.base)
+			if got != tt.want {
+				t.Errorf("isEnvExampleFile(%q) = %v, want %v", tt.base, got, tt.want)
 			}
 		})
 	}
@@ -2002,6 +2126,10 @@ func TestClassifierCrontabAtRedirects(t *testing.T) {
 		{"crontab -l 2>/dev/null | grep -i order", "crontab -l 2>/dev/null | grep -i order", Sandboxed},
 		{"crontab -l && netstat -tlnp", "crontab -l && netstat -tlnp | grep 50888", Sandboxed},
 		{"crontab -l 2>&1 | head -20", "crontab -l 2>&1 | head -20", Sandboxed},
+		// at -c with redirects/pipes — should NOT be escalated (BUG 5 regression).
+		{"at -c 5 2>/dev/null", "at -c 5 2>/dev/null", Sandboxed},
+		{"at -c 5 | head -20", "at -c 5 | head -20", Sandboxed},
+		{"at -c 3 2>&1", "at -c 3 2>&1", Sandboxed},
 		// Edit operations — still escalated.
 		{"crontab -e", "crontab -e", Escalated},
 		{"crontab -r", "crontab -r", Escalated},
@@ -2062,6 +2190,377 @@ func TestClassifierUserManagementPasswdStatusArgs(t *testing.T) {
 			r := c.ClassifyArgs(tt.cmd, tt.args)
 			if r.Decision != tt.want {
 				t.Errorf("ClassifyArgs(%q, %v) = %v (rule=%s), want %v", tt.cmd, tt.args, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// New Escalated rules
+// ---------------------------------------------------------------------------
+
+func TestClassifierPackageInstall(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		{"pip install", "pip install requests", Escalated},
+		{"pip3 install", "pip3 install flask", Escalated},
+		{"pip install -r", "pip install -r requirements.txt", Escalated},
+		{"npm install", "npm install express", Escalated},
+		{"npm i", "npm i lodash", Escalated},
+		{"npm ci", "npm ci", Escalated},
+		{"yarn add", "yarn add react", Escalated},
+		{"yarn install", "yarn install", Escalated},
+		{"pnpm install", "pnpm install", Escalated},
+		{"pnpm add", "pnpm add vue", Escalated},
+		{"cargo install", "cargo install ripgrep", Escalated},
+		{"go install", "go install golang.org/x/tools/gopls@latest", Escalated},
+		{"gem install", "gem install rails", Escalated},
+		{"composer install", "composer install", Escalated},
+		{"composer require", "composer require laravel/framework", Escalated},
+		{"conda install", "conda install numpy", Escalated},
+		// python -m pip install / uninstall variants.
+		{"python -m pip install", "python -m pip install pyautogui", Escalated},
+		{"python3 -m pip install", "python3 -m pip install python-docx", Escalated},
+		{"py -m pip install", "py -m pip install foo", Escalated},
+		{"python3.11 -m pip install", "python3.11 -m pip install paddlepaddle", Escalated},
+		{"py -3.11 -m pip install", "py -3.11 -m pip install paddlepaddle", Escalated},
+		{"python -m pip uninstall", "python -m pip uninstall requests", Escalated},
+		{"pip uninstall", "pip uninstall requests", Escalated},
+		// Windows .exe variants (BUG-50K-2).
+		{"python.exe -m pip install", "python.exe -m pip install foo", Escalated},
+		{"pip.exe install", "pip.exe install requests", Escalated},
+		{"python3.exe -m pip install", "python3.exe -m pip install bar", Escalated},
+		{`C:\Python39\python.exe -m pip install`, `C:\Python39\python.exe -m pip install pkg`, Escalated},
+		// Negative: python -m pip list (not install/uninstall) — caught by dev-tool-run.
+		{"python -m pip list", "python -m pip list", Allow},
+		// Negative: not install subcommand.
+		{"pip list", "pip list", Sandboxed},
+		{"npm run", "npm run build", Sandboxed},
+		{"npm test", "npm test", Sandboxed},
+		{"cargo build", "cargo build", Allow},
+		{"go build", "go build ./...", Allow},
+		{"gem list", "gem list", Sandboxed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%s), want %v", tt.cmd, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifierPackageInstallArgs(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		args []string
+		want Decision
+	}{
+		{"pip install args", "pip", []string{"install", "requests"}, Escalated},
+		{"npm install args", "npm", []string{"install", "express"}, Escalated},
+		{"cargo install args", "cargo", []string{"install", "ripgrep"}, Escalated},
+		{"go install args", "go", []string{"install", "golang.org/x/tools/gopls@latest"}, Escalated},
+		// Negative.
+		{"pip list args", "pip", []string{"list"}, Sandboxed},
+		{"npm run args", "npm", []string{"run", "build"}, Sandboxed},
+		// python -m pip install via args.
+		{"python -m pip install args", "python", []string{"-m", "pip", "install", "foo"}, Escalated},
+		{"python3 -m pip install args", "python3", []string{"-m", "pip", "install", "flask"}, Escalated},
+		{"py -3.11 -m pip install args", "py", []string{"-3.11", "-m", "pip", "install", "pkg"}, Escalated},
+		{"python -m pip uninstall args", "python", []string{"-m", "pip", "uninstall", "foo"}, Escalated},
+		{"python -m pip list args", "python", []string{"-m", "pip", "list"}, Allow},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.ClassifyArgs(tt.cmd, tt.args)
+			if r.Decision != tt.want {
+				t.Errorf("ClassifyArgs(%q, %v) = %v (rule=%s), want %v", tt.cmd, tt.args, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifierBackgroundProcess(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		{"nohup server", "nohup ./server &", Escalated},
+		{"nohup simple", "nohup ./server", Escalated},
+		{"trailing &", "python server.py &", Escalated},
+		{"disown", "./server & disown", Escalated},
+		{"screen session", "screen -S myscreen", Escalated},
+		{"screen detached", "screen -d -m ./server", Escalated},
+		{"tmux new-session", "tmux new-session -d -s work", Escalated},
+		{"tmux new", "tmux new -s work", Escalated},
+		// Negative: && is not background.
+		{"not background &&", "ls && echo done", Sandboxed},
+		// tmux list is not session creation.
+		{"tmux ls", "tmux ls", Sandboxed},
+		{"tmux list-sessions", "tmux list-sessions", Sandboxed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%s), want %v", tt.cmd, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifierBackgroundProcessArgs(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		args []string
+		want Decision
+	}{
+		{"nohup args", "nohup", []string{"./server"}, Escalated},
+		{"screen args", "screen", []string{"-S", "work"}, Escalated},
+		{"tmux new args", "tmux", []string{"new-session", "-d", "-s", "work"}, Escalated},
+		{"trailing & args", "python", []string{"server.py", "&"}, Escalated},
+		// Negative.
+		{"tmux ls args", "tmux", []string{"ls"}, Sandboxed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.ClassifyArgs(tt.cmd, tt.args)
+			if r.Decision != tt.want {
+				t.Errorf("ClassifyArgs(%q, %v) = %v (rule=%s), want %v", tt.cmd, tt.args, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifierInPlaceEdit(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		{"sed -i", "sed -i 's/foo/bar/' file.txt", Escalated},
+		{"sed -i.bak", "sed -i.bak 's/foo/bar/' file.txt", Escalated},
+		{"perl -i", "perl -i -pe 's/foo/bar/' file.txt", Escalated},
+		{"perl -pi", "perl -pi -e 's/foo/bar/' file.txt", Escalated},
+		// Negative: sed without -i is allowed by text-processing rule.
+		{"sed no -i", "sed 's/foo/bar/' file.txt", Allow},
+		// perl without -i is allowed by dev-tool-run rule.
+		{"perl no -i", "perl -e 'print 1'", Allow},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%s), want %v", tt.cmd, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifierInPlaceEditArgs(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		args []string
+		want Decision
+	}{
+		{"sed -i args", "sed", []string{"-i", "s/foo/bar/", "file.txt"}, Escalated},
+		{"sed -i.bak args", "sed", []string{"-i.bak", "s/foo/bar/", "file.txt"}, Escalated},
+		{"perl -i args", "perl", []string{"-i", "-pe", "s/foo/bar/", "file.txt"}, Escalated},
+		{"perl -pi args", "perl", []string{"-pi", "-e", "s/foo/bar/", "file.txt"}, Escalated},
+		// Negative: sed without -i.
+		{"sed no -i args", "sed", []string{"s/foo/bar/", "file.txt"}, Allow},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.ClassifyArgs(tt.cmd, tt.args)
+			if r.Decision != tt.want {
+				t.Errorf("ClassifyArgs(%q, %v) = %v (rule=%s), want %v", tt.cmd, tt.args, r.Decision, r.Rule, tt.want)
+			}
+		})
+	}
+}
+
+// TestClassifierSedInPlaceEvalOrder verifies that sed -i hits the escalated
+// in-place-edit rule and NOT the allow text-processing rule (acceptance
+// criterion #6).
+func TestClassifierSedInPlaceEvalOrder(t *testing.T) {
+	c := DefaultClassifier()
+	r := c.Classify("sed -i 's/old/new/' config.yml")
+	if r.Decision != Escalated {
+		t.Fatalf("expected Escalated for sed -i, got %v", r.Decision)
+	}
+	if r.Rule != "in-place-edit" {
+		t.Errorf("expected rule in-place-edit, got %q", r.Rule)
+	}
+}
+
+// TestClassifierCredentialAccessPubKey verifies that SSH public key files
+// (*.pub) are NOT flagged as credential-access since they are safe to share.
+func TestClassifierCredentialAccessPubKey(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		// Public keys — should NOT be Escalated.
+		{"cat ed25519 pub", "cat ~/.ssh/id_ed25519.pub", Allow},
+		{"cat rsa pub", "cat ~/.ssh/id_rsa.pub", Allow},
+		{"cat custom pub", "cat ~/.ssh/id_qclaw_auto.pub", Allow},
+		{"cat ed25519 easy life pub", "cat ~/.ssh/id_ed25519_easy_life.pub", Allow},
+		{"head rsa pub", "head -5 ~/.ssh/id_rsa.pub", Allow},
+		// Private keys — STILL Escalated.
+		{"cat ed25519 private", "cat ~/.ssh/id_ed25519", Escalated},
+		{"cat rsa private", "cat ~/.ssh/id_rsa", Escalated},
+		{"cat id_dsa private", "cat ~/.ssh/id_dsa", Escalated},
+		{"cat id_ecdsa private", "cat ~/.ssh/id_ecdsa", Escalated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%s), want %v", tt.cmd, r.Decision, r.Rule, tt.want)
+			}
+			if r.Decision == Escalated && r.Rule != "credential-access" {
+				t.Errorf("expected rule credential-access, got %q", r.Rule)
+			}
+		})
+	}
+}
+
+// TestClassifierCredentialAccessPubKeyArgs verifies .pub exclusion via
+// ClassifyArgs.
+func TestClassifierCredentialAccessPubKeyArgs(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		args []string
+		want Decision
+	}{
+		{"pub key args", "cat", []string{"~/.ssh/id_ed25519.pub"}, Allow},
+		{"pub key rsa args", "cat", []string{"~/.ssh/id_rsa.pub"}, Allow},
+		{"private key args", "cat", []string{"~/.ssh/id_ed25519"}, Escalated},
+		{"private key rsa args", "cat", []string{"~/.ssh/id_rsa"}, Escalated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.ClassifyArgs(tt.cmd, tt.args)
+			if r.Decision != tt.want {
+				t.Errorf("ClassifyArgs(%q, %v) = %v (rule=%s), want %v", tt.cmd, tt.args, r.Decision, r.Rule, tt.want)
+			}
+			if r.Decision == Escalated && r.Rule != "credential-access" {
+				t.Errorf("expected rule credential-access, got %q", r.Rule)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// container-escape rule tests
+// ---------------------------------------------------------------------------
+
+func TestContainerEscapeRule(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+		rule RuleName
+	}{
+		// Positive — should be Escalated
+		{"nsenter target mount", "nsenter --target 1 --mount bash", Escalated, RuleContainerEscape},
+		{"chroot evil", "chroot /tmp/evil /bin/bash", Escalated, RuleContainerEscape},
+		{"unshare mount pid", "unshare --mount --pid bash", Escalated, RuleContainerEscape},
+		{"full path nsenter", "/usr/bin/nsenter --target 1 bash", Escalated, RuleContainerEscape},
+		// Negative — info flags caught by version-check allow rule
+		{"nsenter help", "nsenter --help", Allow, ""},
+		{"chroot version", "chroot --version", Allow, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%s), want %v", tt.cmd, r.Decision, r.Rule, tt.want)
+			}
+			if tt.rule != "" && r.Rule != tt.rule {
+				t.Errorf("Classify(%q) rule = %q, want %q", tt.cmd, r.Rule, tt.rule)
+			}
+		})
+	}
+}
+
+func TestContainerEscapeRuleArgs(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		args []string
+		want Decision
+		rule RuleName
+	}{
+		// Positive
+		{"nsenter args", "nsenter", []string{"--target", "1", "--mount", "bash"}, Escalated, RuleContainerEscape},
+		{"chroot args", "chroot", []string{"/tmp/evil", "/bin/bash"}, Escalated, RuleContainerEscape},
+		{"unshare args", "unshare", []string{"--mount", "--pid", "bash"}, Escalated, RuleContainerEscape},
+		{"full path nsenter args", "/usr/bin/nsenter", []string{"--target", "1", "bash"}, Escalated, RuleContainerEscape},
+		// Negative — info flags caught by version-check allow rule
+		{"nsenter help args", "nsenter", []string{"--help"}, Allow, ""},
+		{"chroot version args", "chroot", []string{"--version"}, Allow, ""},
+		// Non-matching command
+		{"echo not matched", "echo", []string{"nsenter"}, Allow, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.ClassifyArgs(tt.cmd, tt.args)
+			if r.Decision != tt.want {
+				t.Errorf("ClassifyArgs(%q, %v) = %v (rule=%s), want %v", tt.cmd, tt.args, r.Decision, r.Rule, tt.want)
+			}
+			if tt.rule != "" && r.Rule != tt.rule {
+				t.Errorf("ClassifyArgs(%q, %v) rule = %q, want %q", tt.cmd, tt.args, r.Rule, tt.rule)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helper: isAtCatOnly
+// ---------------------------------------------------------------------------
+
+func TestIsAtCatOnly(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"at -c jobid", []string{"-c", "5"}, true},
+		{"at -c bare", []string{"-c"}, true},
+		{"at -c large id", []string{"-c", "12345"}, true},
+		{"at schedule", []string{"10:00", "PM"}, false},
+		{"at -f file", []string{"-f", "script.sh", "now"}, false},
+		{"at -m -c", []string{"-m", "-c", "5"}, false},
+		{"at no args", []string{}, false},
+		{"at -c -f", []string{"-c", "-f", "now"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isAtCatOnly(tt.args)
+			if got != tt.want {
+				t.Errorf("isAtCatOnly(%v) = %v, want %v", tt.args, got, tt.want)
 			}
 		})
 	}

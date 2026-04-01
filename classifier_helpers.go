@@ -15,15 +15,29 @@ import (
 var pipeShells = [...]string{"sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby", "node"}
 
 // baseCommand extracts the base name from a possibly path-qualified command.
-// Trailing slashes are stripped before extracting the base name.
+// Trailing slashes are stripped before extracting the base name. Windows
+// executable suffixes (.exe, .cmd, .bat) are removed so that "python.exe"
+// normalizes to "python" and all rules match uniformly.
 func baseCommand(cmd string) string {
 	cmd = strings.TrimRight(cmd, "/")
 	if cmd == "" {
 		return ""
 	}
+	// Also handle Windows backslash paths (e.g. C:\Python39\python.exe).
 	idx := strings.LastIndex(cmd, "/")
+	if bIdx := strings.LastIndex(cmd, `\`); bIdx > idx {
+		idx = bIdx
+	}
 	if idx >= 0 {
-		return cmd[idx+1:]
+		cmd = cmd[idx+1:]
+	}
+	// Strip common Windows executable suffixes.
+	lower := strings.ToLower(cmd)
+	for _, suffix := range []string{".exe", ".cmd", ".bat"} {
+		if strings.HasSuffix(lower, suffix) {
+			cmd = cmd[:len(cmd)-len(suffix)]
+			break
+		}
 	}
 	return cmd
 }
@@ -245,10 +259,10 @@ func hasStandaloneCommand(s, cmd string) bool {
 
 // isRedirectTerminator reports whether c is a shell metacharacter that
 // terminates a redirect target path. Redirect targets end at whitespace,
-// newlines, and shell operators like ; & | ) < >.
+// newlines, shell operators like ; & | ) < >, and brace group delimiters { }.
 func isRedirectTerminator(c byte) bool {
 	switch c {
-	case ' ', '\t', '\n', ';', '&', '|', ')', '<', '>':
+	case ' ', '\t', '\n', ';', '&', '|', ')', '<', '>', '{', '}':
 		return true
 	}
 	return false
@@ -286,37 +300,196 @@ func isWordChar(b byte) bool {
 }
 
 // isSimpleCommand reports whether command is a simple command — i.e. it does
-// NOT contain top-level compound operators (&&, ||, ;). Operators inside single
-// quotes, double quotes, $(...) subshells, or backticks are ignored. Pipes are
-// intentionally excluded because they chain output rather than running
-// independent commands; dangerous pipe targets are caught by dedicated rules
-// (pipeToShellRule). Allow rules use this to prevent
-// "which python && rm -rf /" from matching as safe.
+// NOT contain top-level compound operators (&&, ||, ;), pipes (|, |&), or
+// I/O redirections (>, >>, <, <<). Operators inside single quotes, double
+// quotes, $(...) subshells, or backticks are ignored.
+//
+// Redirects are rejected because "echo payload > /etc/cron.d/job" would
+// otherwise pass as a simple echo. The one safe redirect family — fd-to-fd
+// merges like 2>&1 and >&2 — is explicitly allowed: any ">" immediately
+// followed by "&" and a digit is kept.
+//
+// Allow rules use this to prevent compound/redirect abuse.
 func isSimpleCommand(command string) bool {
+	return isSimpleScan(command, false, false, false)
+}
+
+// isSimpleScan performs the character-level scan for isSimpleCommand.
+// The ignore* parameters tell the scanner to treat the corresponding quote
+// character as a literal (not a quote delimiter). This is used to recover
+// from unmatched quotes — common in user-supplied paths such as "Mia's dir".
+func isSimpleScan(command string, ignoreSingle, ignoreDouble, ignoreBtick bool) bool {
 	var ps pipeScanner
 	for i := 0; i < len(command); i++ {
 		ch := command[i]
 		pos := i // save position before advance
 
-		// Let the pipe scanner handle escapes and quoting state.
-		advance, _ := ps.feed(command, i)
-		i += advance
+		// When an unmatched-quote retry tells us to ignore a specific
+		// quote type, skip past it so the pipeScanner sees it as a
+		// literal character (it never toggles that quote state).
+		isIgnored := (ch == '\'' && ignoreSingle) ||
+			(ch == '"' && ignoreDouble) ||
+			(ch == '`' && ignoreBtick)
+		if !isIgnored {
+			// Let the pipe scanner handle escapes and quoting state.
+			advance, _ := ps.feed(command, i)
+			i += advance
+		}
 
-		// Outside quotes/subshells, check for &&, ||, and ;.
+		// Outside quotes/subshells, check for compound operators,
+		// pipes, and redirections.
 		if ps.inSingle || ps.inDouble || ps.inBtick || ps.depth > 0 {
 			continue
 		}
-		if ch == ';' {
+		if _, reject := isSimpleCheck(ch, command, pos); reject {
 			return false
 		}
-		if ch == '&' && pos+1 < len(command) && command[pos+1] == '&' {
-			return false
-		}
-		if ch == '|' && pos+1 < len(command) && command[pos+1] == '|' {
+	}
+
+	// If a quote was opened but never closed, the command contains an
+	// unmatched quote (e.g. an apostrophe in a file-path like "Mia's").
+	// In a real shell this would be a syntax error, but IDE-submitted
+	// commands contain literal apostrophes in paths routinely. Re-scan
+	// while treating the unmatched quote type as a literal so that
+	// operators hidden behind the false quote context are detected.
+	if ps.inSingle || ps.inDouble || ps.inBtick {
+		return isSimpleScan(command,
+			ignoreSingle || ps.inSingle,
+			ignoreDouble || ps.inDouble,
+			ignoreBtick || ps.inBtick,
+		)
+	}
+
+	// Paranoid check: even-count stray quotes can pair up and hide
+	// operators.  Re-scan with all quotes as literals — if operators are
+	// found, the command is not simple regardless of apparent quoting.
+	// In our classifier context commands come from IDEs, not real shells,
+	// so legitimate quoting of operators (e.g. echo "a && b") should
+	// still be treated conservatively.
+	if !ignoreSingle || !ignoreDouble || !ignoreBtick {
+		if !isSimpleScan(command, true, true, true) {
 			return false
 		}
 	}
 	return true
+}
+
+// isSimpleCheck inspects a single top-level character at position pos in
+// command and reports whether it should be (safe=continue, reject=false).
+// If both are false the caller continues scanning normally.
+func isSimpleCheck(ch byte, command string, pos int) (safe, reject bool) {
+	n := len(command)
+	switch ch {
+	case ';':
+		return false, true
+	case '&':
+		return isSimpleAmpersand(command, pos, n)
+	case '|':
+		return isSimplePipe()
+	case '>':
+		return isSimpleOutputRedirect(command, pos, n)
+	case '<':
+		return isSimpleInputRedirect()
+	}
+	return false, false
+}
+
+// isSimpleAmpersand handles '&' in isSimpleCommand.
+func isSimpleAmpersand(command string, pos, n int) (safe, reject bool) {
+	// Double && is a compound operator.
+	if pos+1 < n && command[pos+1] == '&' {
+		return false, true
+	}
+	// Skip & when it is part of a redirect operator (>&, &>).
+	// Examples: 2>&1, &>/dev/null.
+	if pos > 0 && command[pos-1] == '>' {
+		return true, false
+	}
+	if pos+1 < n && command[pos+1] == '>' {
+		return true, false
+	}
+	// Bare & (not part of && or redirect) is a Windows command
+	// separator and Unix background operator — treat as compound.
+	return false, true
+}
+
+// isSimplePipe handles '|' in isSimpleCommand. All pipe variants are rejected.
+func isSimplePipe() (safe, reject bool) {
+	// || (logical OR), |& (bash stderr pipe), or single | — all rejected.
+	return false, true
+}
+
+// isSimpleOutputRedirect handles '>' in isSimpleCommand.
+// Safe fd-to-fd merges (>&N, e.g. 2>&1, >&2) return safe=true.
+func isSimpleOutputRedirect(command string, pos, n int) (safe, reject bool) {
+	next := pos + 1
+	// >> (append) — reject.
+	if next < n && command[next] == '>' {
+		return false, true
+	}
+	// >& followed by a digit is an fd-to-fd merge (safe).
+	if next < n && command[next] == '&' {
+		if next+1 < n && command[next+1] >= '0' && command[next+1] <= '9' {
+			return true, false
+		}
+		// >& without a digit (e.g. >&file) — reject.
+		return false, true
+	}
+	// Plain > (output redirect to file) — reject.
+	return false, true
+}
+
+// isSimpleInputRedirect handles '<' in isSimpleCommand. All input redirects
+// (< and << heredoc) are rejected.
+func isSimpleInputRedirect() (safe, reject bool) {
+	return false, true
+}
+
+// clipboardTools lists commands that modify the system clipboard.
+var clipboardTools = map[string]bool{
+	"pbcopy": true, "xclip": true, "xsel": true, "clip": true,
+}
+
+// hasOutputRedirectOrClipboardPipe scans command (outside quotes and
+// subshells) for output redirection (> or >>) or a pipe to a clipboard
+// tool (pbcopy, xclip, xsel, clip).  It returns true if either pattern
+// is found.  This is used by allow rules to reject commands like
+// "printf '...' > file" or "printf ... | pbcopy".
+func hasOutputRedirectOrClipboardPipe(command string) bool {
+	var ps pipeScanner
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		pos := i
+		advance, _ := ps.feed(command, i)
+		i += advance
+		if ps.inSingle || ps.inDouble || ps.inBtick || ps.depth > 0 {
+			continue
+		}
+		// Detect > or >> outside quotes (but not >&, which is stderr merge).
+		if ch == '>' {
+			next := byte(0)
+			if pos+1 < len(command) {
+				next = command[pos+1]
+			}
+			// Skip >& (stderr redirect merge like >&2, 2>&1).
+			if next == '&' {
+				continue
+			}
+			return true
+		}
+		// Detect pipe to clipboard tool.
+		if ch == '|' {
+			rest := strings.TrimLeft(command[pos+1:], " \t")
+			word := rest
+			if idx := strings.IndexAny(rest, " \t"); idx >= 0 {
+				word = rest[:idx]
+			}
+			if clipboardTools[baseCommand(word)] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // containsWordToken reports whether s contains token as a standalone word

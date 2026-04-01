@@ -49,6 +49,10 @@ const (
 	cmdPodman = "podman"
 	// subStash is the git stash subcommand name.
 	subStash = "stash"
+	// cmdDoas is the doas command name used in privilege escalation rules.
+	cmdDoas = "doas"
+	// cmdEnv is the env command name used as a prefix wrapper.
+	cmdEnv = "env"
 )
 
 // Compile-time interface checks for classifier types in this file.
@@ -192,14 +196,29 @@ func DefaultClassifier() Classifier {
 }
 
 // defaultRules returns the built-in rules in priority order.
+// The shell-wrapper-unwrap rule is placed first among forbidden rules so that
+// wrapped commands (e.g. "bash -c 'rm -rf /'") are unwrapped before other
+// rules evaluate them. It receives the full rule set (including itself) so
+// that double-wrapped commands (e.g. "bash -c 'sh -c \"rm -rf /\"'") are also
+// unwrapped. Infinite recursion is prevented by extractShellWrapperInner
+// returning false when the inner command is not a shell wrapper.
 func defaultRules() []rule {
-	forbidden := forbiddenRules()
+	core := coreForbiddenRules()
 	escalated := escalatedRules()
 	allow := allowRules()
-	rules := make([]rule, 0, len(forbidden)+len(escalated)+len(allow))
-	rules = append(rules, forbidden...)
+
+	// Pre-allocate the final list: unwrap + core forbidden + escalated + allow.
+	rules := make([]rule, 0, 1+len(core)+len(escalated)+len(allow))
+
+	// Placeholder for the unwrap rule at index 0; we'll fill it in after
+	// the slice is built so the unwrap rule can reference the full list.
+	rules = append(rules, rule{Name: "shell-wrapper-unwrap"})
+	rules = append(rules, core...)
 	rules = append(rules, escalated...)
 	rules = append(rules, allow...)
+
+	// Now create the unwrap rule that re-classifies against the full list.
+	rules[0] = shellWrapperUnwrapRule(rules)
 	return rules
 }
 
@@ -207,7 +226,8 @@ func defaultRules() []rule {
 // Forbidden rules (highest priority)
 // ---------------------------------------------------------------------------
 
-func forbiddenRules() []rule {
+// coreForbiddenRules returns all forbidden rules except shell-wrapper-unwrap.
+func coreForbiddenRules() []rule {
 	return []rule{
 		forkBombRule(),
 		recursiveDeleteRootRule(),
@@ -224,6 +244,10 @@ func forbiddenRules() []rule {
 		destructiveFindRule(),
 		destructiveXargsRule(),
 		outputRedirectSystemRule(),
+		windowsRecursiveDeleteRule(),
+		windowsDelRecursiveRule(),
+		windowsFormatRule(),
+		powershellDestructiveRule(),
 	}
 }
 
@@ -239,6 +263,15 @@ func allowRules() []rule {
 		windowsSafeCommandsRule(),
 		cdSleepRule(),
 		processListRule(),
+		devToolRunRule(),
+		buildToolRule(),
+		goToolRule(),
+		fileManagementRule(),
+		textProcessingRule(),
+		networkDiagnosticRule(),
+		archiveToolRule(),
+		shellBuiltinRule(),
+		openCommandRule(),
 	}
 }
 
@@ -272,5 +305,9 @@ func escalatedRules() []rule {
 		databaseClientRule(),
 		gitStashDropRule(),
 		evalExecRule(),
+		packageInstallRule(),
+		backgroundProcessRule(),
+		inPlaceEditRule(),
+		containerEscapeRule(),
 	}
 }

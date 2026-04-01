@@ -23,6 +23,11 @@ const (
 	RuleDestructiveFind      RuleName = "destructive-find"
 	RuleDestructiveXargs     RuleName = "destructive-xargs"
 	RuleOutputRedirectSystem RuleName = "output-redirect-system"
+	RuleShellWrapperUnwrap   RuleName = "shell-wrapper-unwrap"
+	RuleWindowsRecursiveDel  RuleName = "windows-recursive-delete"
+	RuleWindowsDelRecursive  RuleName = "windows-del-recursive"
+	RuleWindowsFormat        RuleName = "windows-format"
+	RulePowershellDestructive RuleName = "powershell-destructive"
 
 	// Escalated rules — commands requiring user approval.
 
@@ -50,6 +55,10 @@ const (
 	RuleDatabaseBackup       RuleName = "database-backup"
 	RuleGitStashDrop         RuleName = "git-stash-drop"
 	RuleEvalExec             RuleName = "eval-exec"
+	RulePackageInstall       RuleName = "package-install"
+	RuleBackgroundProcess    RuleName = "background-process"
+	RuleInPlaceEdit          RuleName = "in-place-edit"
+	RuleContainerEscape      RuleName = "container-escape"
 
 	// Allow rules — commands safe for automatic execution.
 
@@ -59,6 +68,15 @@ const (
 	RuleWindowsSafeCommands RuleName = "windows-safe-commands"
 	RuleCDSleep             RuleName = "cd-sleep"
 	RuleProcessList         RuleName = "process-list"
+	RuleDevToolRun          RuleName = "dev-tool-run"
+	RuleBuildTool           RuleName = "build-tool"
+	RuleGoTool              RuleName = "go-tool"
+	RuleFileManagement      RuleName = "file-management"
+	RuleTextProcessing      RuleName = "text-processing"
+	RuleNetworkDiagnostic   RuleName = "network-diagnostic"
+	RuleArchiveTool         RuleName = "archive-tool"
+	RuleShellBuiltin        RuleName = "shell-builtin"
+	RuleOpenCommand         RuleName = "open-command"
 )
 
 // BuiltinRuleNames returns all built-in rule names in evaluation order
@@ -81,6 +99,11 @@ func BuiltinRuleNames() []RuleName {
 		RuleDestructiveFind,
 		RuleDestructiveXargs,
 		RuleOutputRedirectSystem,
+		RuleShellWrapperUnwrap,
+		RuleWindowsRecursiveDel,
+		RuleWindowsDelRecursive,
+		RuleWindowsFormat,
+		RulePowershellDestructive,
 
 		// Escalated
 		RuleSudo,
@@ -107,6 +130,10 @@ func BuiltinRuleNames() []RuleName {
 		RuleDatabaseClient,
 		RuleGitStashDrop,
 		RuleEvalExec,
+		RulePackageInstall,
+		RuleBackgroundProcess,
+		RuleInPlaceEdit,
+		RuleContainerEscape,
 
 		// Allow
 		RuleCommonSafeCommands,
@@ -115,5 +142,14 @@ func BuiltinRuleNames() []RuleName {
 		RuleWindowsSafeCommands,
 		RuleCDSleep,
 		RuleProcessList,
+		RuleDevToolRun,
+		RuleBuildTool,
+		RuleGoTool,
+		RuleFileManagement,
+		RuleTextProcessing,
+		RuleNetworkDiagnostic,
+		RuleArchiveTool,
+		RuleShellBuiltin,
+		RuleOpenCommand,
 	}
 }

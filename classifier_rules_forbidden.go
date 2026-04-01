@@ -225,7 +225,7 @@ func reverseShellRule() rule {
 			base := baseCommand(name)
 			baseLower := strings.ToLower(base)
 			checkers := []func() (ClassifyResult, bool){
-				func() (ClassifyResult, bool) { return rsArgsDevTCP(args) },
+				func() (ClassifyResult, bool) { return rsArgsDevTCP(name, args) },
 				func() (ClassifyResult, bool) { return rsArgsNCExec(baseLower, args) },
 				func() (ClassifyResult, bool) { return rsArgsSocat(baseLower, args) },
 				func() (ClassifyResult, bool) { return rsArgsRuby(baseLower, lower) },
@@ -266,10 +266,61 @@ func rsDevTCP(command string) (ClassifyResult, bool) {
 		return ClassifyResult{}, false
 	}
 	lower := strings.ToLower(command)
+	// A timeout-wrapped /dev/tcp probe without interactive-shell redirects
+	// (0>&1, >& followed by space or EOL) is a connectivity test, not a
+	// reverse shell. Example: "timeout 3 bash -c 'exec 3<>/dev/tcp/h/p'"
+	if isTimeoutConnectivityProbe(lower) {
+		return ClassifyResult{}, false
+	}
 	if rsDevTCPHasIndicator(lower) {
 		return rsResult("reverse shell via /dev/tcp or /dev/udp detected")
 	}
 	return ClassifyResult{}, false
+}
+
+// isTimeoutConnectivityProbe reports whether a lowered command looks like a
+// timeout-wrapped port connectivity test using /dev/tcp or /dev/udp. These
+// open a fd to test reachability but do not redirect stdin/stdout for an
+// interactive shell session. We require:
+//  1. The command starts with "timeout" (to bound execution time).
+//  2. The command does NOT contain "0>&1" (stdin→stdout reverse shell pattern).
+//  3. The command does NOT contain bare ">&" followed by space or end-of-string
+//     (stdout+stderr redirect for interactive shell).
+//  4. The command does NOT invoke a shell (/bin/sh, /bin/bash) outside the
+//     wrapper itself.
+func isTimeoutConnectivityProbe(lower string) bool {
+	fields := strings.Fields(lower)
+	if len(fields) == 0 || baseCommand(fields[0]) != "timeout" {
+		return false
+	}
+	// Reject if interactive-shell redirect patterns are present.
+	if strings.Contains(lower, "0>&1") {
+		return false
+	}
+	if strings.Contains(lower, ">& ") || strings.HasSuffix(lower, ">&") {
+		return false
+	}
+	// Reject if non-standard fd redirects are present (e.g. >&3, <&5).
+	// These indicate data exfiltration like "cat /etc/shadow >&3".
+	if hasNonStdFDRedirect(lower) {
+		return false
+	}
+	// Reject if a shell is invoked as a payload (not just as the -c wrapper).
+	// "bash -c 'exec 3<>/dev/tcp/...'" is a wrapper; look for shell AFTER
+	// /dev/tcp which would indicate piping to a shell.
+	if idx := strings.Index(lower, "/dev/tcp/"); idx >= 0 {
+		tail := lower[idx:]
+		if strings.Contains(tail, "/bin/sh") || strings.Contains(tail, "/bin/bash") {
+			return false
+		}
+	}
+	if idx := strings.Index(lower, "/dev/udp/"); idx >= 0 {
+		tail := lower[idx:]
+		if strings.Contains(tail, "/bin/sh") || strings.Contains(tail, "/bin/bash") {
+			return false
+		}
+	}
+	return true
 }
 
 // rsDevTCPHasIndicator reports whether a (lowered) command string contains
@@ -506,13 +557,22 @@ func hasWholeFlag(s, flag string) bool {
 }
 
 // splitCompoundSegments splits a command string on shell compound operators
-// (&&, ||, ;) and top-level pipes. This is a rough split for checking flag
-// locality and does not need full quote awareness.
+// (&&, ||, ;) and top-level pipes, respecting quoting and subshell nesting.
+// This is used for checking flag locality in reverse-shell rules.
 func splitCompoundSegments(s string) []string {
-	var result []string
-	start := 0
+	var (
+		result []string
+		ps     pipeScanner
+		start  int
+	)
 	for i := 0; i < len(s); i++ {
-		switch s[i] {
+		advance, _ := ps.feed(s, i)
+		if ps.inSingle || ps.inDouble || ps.inBtick || ps.depth > 0 {
+			i += advance
+			continue
+		}
+		ch := s[i]
+		switch ch {
 		case '&':
 			if i+1 < len(s) && s[i+1] == '&' {
 				result = append(result, s[start:i])
@@ -532,6 +592,7 @@ func splitCompoundSegments(s string) []string {
 			result = append(result, s[start:i])
 			start = i + 1
 		}
+		i += advance
 	}
 	return append(result, s[start:])
 }
@@ -618,7 +679,7 @@ func rsOpenSSLPipe(lower, command string) (ClassifyResult, bool) {
 // argument list. Like rsDevTCP, it requires additional reverse-shell
 // indicators (exec, fd redirection, shell invocation) to avoid flagging
 // simple connectivity tests.
-func rsArgsDevTCP(args []string) (ClassifyResult, bool) {
+func rsArgsDevTCP(name string, args []string) (ClassifyResult, bool) {
 	hasDevTCP := false
 	for _, a := range args {
 		if strings.Contains(a, "/dev/tcp/") || strings.Contains(a, "/dev/udp/") {
@@ -631,6 +692,13 @@ func rsArgsDevTCP(args []string) (ClassifyResult, bool) {
 	}
 	// Reuse rsDevTCPHasIndicator for consistent indicator checking.
 	joined := strings.ToLower(strings.Join(args, " "))
+	// Exempt timeout-wrapped connectivity probes (consistent with Classify path).
+	// Prepend the command name since isTimeoutConnectivityProbe expects the
+	// full command string starting with "timeout".
+	fullCmd := strings.ToLower(name) + " " + joined
+	if isTimeoutConnectivityProbe(fullCmd) {
+		return ClassifyResult{}, false
+	}
 	if rsDevTCPHasIndicator(joined) {
 		return rsResult("reverse shell via /dev/tcp or /dev/udp detected")
 	}
@@ -820,7 +888,8 @@ func filesystemFormatRule() rule {
 
 func checkFilesystemFormat(base string, args []string) (ClassifyResult, bool) {
 	// Help/version queries are safe for all commands in this rule.
-	if hasHelpOrVersionFlag(args) {
+	// -V is only safe when it is the sole argument (no device target).
+	if hasHelpOrVersionFlag(args) || hasVersionOnlyFlag(args) {
 		return ClassifyResult{}, false
 	}
 	result := ClassifyResult{
@@ -1124,7 +1193,30 @@ func containsShutdownAbort(args []string) bool {
 	return false
 }
 
+// isModprobeReadOnly reports whether the argument list contains flags that
+// make modprobe a read-only query: --show-*, --dump-*, --dry-run, or -n.
+func isModprobeReadOnly(args []string) bool {
+	// If a command separator is present, this is a compound command.
+	// Don't exempt it — a subsequent command may be destructive
+	// (e.g. "modprobe --show-depends x && modprobe x").
+	for _, a := range args {
+		if isCommandSeparator(a) {
+			return false
+		}
+	}
+	for _, a := range args {
+		if strings.HasPrefix(a, "--show-") || strings.HasPrefix(a, "--dump-") {
+			return true
+		}
+		if a == "--dry-run" || a == "-n" {
+			return true
+		}
+	}
+	return false
+}
+
 // kernelModuleRule matches commands that manipulate kernel modules.
+// Read-only modprobe queries (--show-*, --dump-*, --dry-run, -n) are exempt.
 func kernelModuleRule() rule {
 	kmodCmds := map[string]bool{
 		"insmod": true, "rmmod": true, "modprobe": true, "depmod": true,
@@ -1136,24 +1228,40 @@ func kernelModuleRule() rule {
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if kmodCmds[baseCommand(fields[0])] {
-				return ClassifyResult{
-					Decision: Forbidden,
-					Reason:   "kernel module manipulation is forbidden",
-					Rule:     "kernel-module",
-				}, true
+			base := baseCommand(fields[0])
+			if !kmodCmds[base] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			// Help/version queries are safe.
+			if hasHelpOrVersionFlag(fields[1:]) || hasVersionOnlyFlag(fields[1:]) {
+				return ClassifyResult{}, false
+			}
+			// Read-only modprobe queries (--show-*, --dump-*, --dry-run, -n).
+			if base == "modprobe" && isModprobeReadOnly(fields[1:]) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Forbidden,
+				Reason:   "kernel module manipulation is forbidden",
+				Rule:     "kernel-module",
+			}, true
 		},
-		MatchArgs: func(name string, _ []string) (ClassifyResult, bool) {
-			if kmodCmds[baseCommand(name)] {
-				return ClassifyResult{
-					Decision: Forbidden,
-					Reason:   "kernel module manipulation is forbidden",
-					Rule:     "kernel-module",
-				}, true
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			base := baseCommand(name)
+			if !kmodCmds[base] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			if hasHelpOrVersionFlag(args) || hasVersionOnlyFlag(args) {
+				return ClassifyResult{}, false
+			}
+			if base == "modprobe" && isModprobeReadOnly(args) {
+				return ClassifyResult{}, false
+			}
+			return ClassifyResult{
+				Decision: Forbidden,
+				Reason:   "kernel module manipulation is forbidden",
+				Rule:     "kernel-module",
+			}, true
 		},
 	}
 }
@@ -1174,7 +1282,7 @@ func partitionManagementRule() rule {
 			}
 			if partCmds[baseCommand(fields[0])] {
 				// Help/version queries are safe.
-				if hasHelpOrVersionFlag(fields[1:]) {
+				if hasHelpOrVersionFlag(fields[1:]) || hasVersionOnlyFlag(fields[1:]) {
 					return ClassifyResult{}, false
 				}
 				return ClassifyResult{
@@ -1188,7 +1296,7 @@ func partitionManagementRule() rule {
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			if partCmds[baseCommand(name)] {
 				// Help/version queries are safe.
-				if hasHelpOrVersionFlag(args) {
+				if hasHelpOrVersionFlag(args) || hasVersionOnlyFlag(args) {
 					return ClassifyResult{}, false
 				}
 				return ClassifyResult{
@@ -1487,6 +1595,13 @@ func hasHelpOrVersionFlag(args []string) bool {
 	return false
 }
 
+// hasVersionOnlyFlag returns true when args consist solely of "-V" with no
+// other arguments. This prevents "-V" from exempting commands that also have
+// a device/target argument (e.g. "mkfs.ext4 -V /dev/sda1").
+func hasVersionOnlyFlag(args []string) bool {
+	return len(args) == 1 && args[0] == "-V"
+}
+
 // xargsNoValFlags are xargs flags that take no argument value.
 //
 // Boolean flags: -0, -t, -p, -r, --no-run-if-empty, --verbose, --null, -x, --exit
@@ -1507,6 +1622,459 @@ var xargsValFlags = map[string]bool{
 	"-a": true,
 	"--arg-file": true, "--delimiter": true, "--max-args": true,
 	"--max-procs": true, "--max-lines": true, "--replace": true,
+}
+
+// shellWrapperUnwrapRule detects shell wrapper commands (sh -c, bash -c,
+// cmd /c, cmd.exe /c, powershell -Command, etc.) and recursively classifies
+// the inner command. This prevents bypassing forbidden rules by wrapping
+// dangerous commands inside a shell invocation.
+//
+// The rule extracts the inner command string and re-classifies it using the
+// same rule set. It preserves the original rule name from the inner match so
+// that "bash -c 'rm -rf /'" reports as "recursive-delete-root", not a generic
+// "shell-wrapper" rule.
+func shellWrapperUnwrapRule(rules []rule) rule {
+	return rule{
+		Name: "shell-wrapper-unwrap",
+		Match: func(command string) (ClassifyResult, bool) {
+			inner, ok := extractShellWrapperInner(command)
+			if !ok || inner == "" {
+				return ClassifyResult{}, false
+			}
+			return classifyWithRules(inner, rules)
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			inner, ok := extractShellWrapperInnerArgs(name, args)
+			if !ok || inner == "" {
+				return ClassifyResult{}, false
+			}
+			return classifyWithRules(inner, rules)
+		},
+	}
+}
+
+// classifyWithRules evaluates a command against the given rule set.
+func classifyWithRules(command string, rules []rule) (ClassifyResult, bool) {
+	for _, r := range rules {
+		if r.Match != nil {
+			if result, ok := r.Match(command); ok {
+				return result, true
+			}
+		}
+	}
+	return ClassifyResult{}, false
+}
+
+// unixShellWrappers are Unix shell commands that accept -c to run an inline
+// command string.
+var unixShellWrappers = map[string]bool{
+	"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true,
+}
+
+// windowsShellWrappers maps Windows shell commands to their "execute"
+// flag. cmd.exe uses /c (or /C), powershell uses -Command (or -c).
+var windowsShellWrappers = map[string]string{
+	"cmd": "/c", "cmd.exe": "/c",
+}
+
+// psWrappers are PowerShell executable names.
+var psWrappers = map[string]bool{
+	"powershell": true, "powershell.exe": true,
+	"pwsh": true, "pwsh.exe": true,
+}
+
+// extractShellWrapperInner extracts the inner command from a shell wrapper
+// command string. Returns ("", false) if the command is not a shell wrapper.
+func extractShellWrapperInner(command string) (string, bool) {
+	fields := strings.Fields(command)
+	if len(fields) < 3 {
+		return "", false
+	}
+
+	// Skip prefix commands like env, nice, nohup, sudo, etc.
+	idx := 0
+	for idx < len(fields)-2 && isPrefixCommand(strings.ToLower(baseCommand(fields[idx]))) {
+		idx++
+	}
+	if idx >= len(fields)-2 {
+		return "", false
+	}
+	base := strings.ToLower(baseCommand(fields[idx]))
+
+	// Unix: sh -c "...", bash -c "..."
+	if unixShellWrappers[base] {
+		if idx+2 < len(fields) && fields[idx+1] == "-c" {
+			inner := strings.Join(fields[idx+2:], " ")
+			return stripOuterQuotes(inner), true
+		}
+		return "", false
+	}
+
+	// Windows: cmd /c "...", cmd.exe /C "..."
+	if _, ok := windowsShellWrappers[base]; ok {
+		if idx+2 < len(fields) && strings.EqualFold(fields[idx+1], "/c") {
+			inner := strings.Join(fields[idx+2:], " ")
+			return stripOuterQuotes(inner), true
+		}
+		// cmd /c"rmdir ..." (no space between /c and command)
+		if idx+1 < len(fields) {
+			arg := fields[idx+1]
+			if len(arg) > 2 && strings.EqualFold(arg[:2], "/c") {
+				rest := arg[2:]
+				if len(fields) > idx+2 {
+					rest += " " + strings.Join(fields[idx+2:], " ")
+				}
+				return stripOuterQuotes(rest), true
+			}
+		}
+		return "", false
+	}
+
+	// PowerShell: powershell -Command "...", powershell -c "..."
+	if psWrappers[base] {
+		for j := idx + 1; j < len(fields)-1; j++ {
+			lower := strings.ToLower(fields[j])
+			if lower == "-command" || lower == "-c" {
+				inner := strings.Join(fields[j+1:], " ")
+				return stripOuterQuotes(inner), true
+			}
+			// Skip other PowerShell flags (e.g. -NoProfile, -ExecutionPolicy)
+			if strings.HasPrefix(fields[j], "-") {
+				// If the flag takes a value, skip the value too.
+				if isPowerShellValueFlag(lower) && j+1 < len(fields) {
+					j++ // skip value
+				}
+				continue
+			}
+			break
+		}
+		return "", false
+	}
+
+	return "", false
+}
+
+// extractShellWrapperInnerArgs is the MatchArgs variant of extractShellWrapperInner.
+func extractShellWrapperInnerArgs(name string, args []string) (string, bool) {
+	parts := make([]string, 0, 1+len(args))
+	parts = append(parts, name)
+	parts = append(parts, args...)
+	return extractShellWrapperInner(strings.Join(parts, " "))
+}
+
+// isPrefixCommand returns true for commands that act as wrappers/prefixes
+// (e.g. env, nice, nohup, sudo, doas) before the actual command.
+func isPrefixCommand(cmd string) bool {
+	switch cmd {
+	case cmdEnv, "nice", "nohup", ruleSudo, cmdDoas, "strace", "ltrace", "time":
+		return true
+	}
+	return false
+}
+
+// isPowerShellValueFlag returns true for PowerShell flags that consume a
+// following argument as their value.
+func isPowerShellValueFlag(flag string) bool {
+	switch flag {
+	case "-executionpolicy", "-inputformat", "-outputformat", "-encodedcommand",
+		"-file", "-configurationname", "-windowstyle":
+		return true
+	}
+	return false
+}
+
+// stripOuterQuotes removes a matching pair of outer quotes (single or double)
+// from a string. It handles the common case where shell wrapper inner commands
+// are quoted: bash -c "rm -rf /" → rm -rf /
+func stripOuterQuotes(s string) string {
+	if len(s) < 2 {
+		return s
+	}
+	if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// windowsRecursiveDeleteRule detects Windows recursive directory deletion
+// commands: rmdir /s /q and rd /s /q targeting dangerous paths.
+func windowsRecursiveDeleteRule() rule {
+	const ruleName = "windows-recursive-delete"
+	rmdirCmds := map[string]bool{"rmdir": true, "rd": true}
+
+	matchInner := func(fields []string) (ClassifyResult, bool) {
+		if len(fields) < 2 {
+			return ClassifyResult{}, false
+		}
+		cmd := strings.ToLower(baseCommand(fields[0]))
+		if !rmdirCmds[cmd] {
+			return ClassifyResult{}, false
+		}
+		// Check for /s flag (recursive) — case-insensitive.
+		hasS := false
+		for _, f := range fields[1:] {
+			if isCommandSeparator(f) {
+				break
+			}
+			if strings.EqualFold(f, "/s") {
+				hasS = true
+				break
+			}
+		}
+		if !hasS {
+			return ClassifyResult{}, false
+		}
+		// Check targets for dangerous paths.
+		for _, f := range fields[1:] {
+			if isCommandSeparator(f) {
+				break
+			}
+			if strings.HasPrefix(f, "/") && !isWindowsFlag(f) {
+				// Could be a Unix-style path like "/"
+				if isDangerousTarget(f) {
+					return ClassifyResult{
+						Decision: Forbidden,
+						Reason:   "recursive directory deletion targeting dangerous path",
+						Rule:     ruleName,
+					}, true
+				}
+			}
+			if isWindowsDangerousTarget(f) {
+				return ClassifyResult{
+					Decision: Forbidden,
+					Reason:   "recursive directory deletion targeting dangerous path",
+					Rule:     ruleName,
+				}, true
+			}
+		}
+		return ClassifyResult{}, false
+	}
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			fields := strings.Fields(command)
+			return matchInner(fields)
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			fields := make([]string, 0, 1+len(args))
+			fields = append(fields, name)
+			fields = append(fields, args...)
+			return matchInner(fields)
+		},
+	}
+}
+
+// isWindowsFlag returns true if the token looks like a Windows-style flag
+// (e.g. /s, /q, /f, /y) rather than a path.
+func isWindowsFlag(s string) bool {
+	if len(s) < 2 || s[0] != '/' {
+		return false
+	}
+	// Single-letter flags: /s, /q, /f, /y, /a, etc.
+	if len(s) == 2 && ((s[1] >= 'a' && s[1] <= 'z') || (s[1] >= 'A' && s[1] <= 'Z')) {
+		return true
+	}
+	return false
+}
+
+// isWindowsDangerousTarget returns true if the path is a dangerous Windows
+// deletion target: current directory ".", drive roots ("C:\", "D:\"), or
+// system directories.
+func isWindowsDangerousTarget(arg string) bool {
+	if arg == "." || arg == ".." {
+		return true
+	}
+	upper := strings.ToUpper(arg)
+	// Drive root: "C:\", "D:\", etc.
+	if len(upper) >= 2 && upper[0] >= 'A' && upper[0] <= 'Z' && upper[1] == ':' {
+		rest := upper[2:]
+		if rest == "" || rest == `\` || rest == "/" || rest == `\*` || rest == "/*" {
+			return true
+		}
+	}
+	// Windows system directories
+	systemPaths := []string{
+		`C:\WINDOWS`, `C:\WINDOWS\SYSTEM32`, `C:\PROGRAM FILES`,
+		`C:\PROGRAM FILES (X86)`, `%SYSTEMROOT%`, `%WINDIR%`,
+	}
+	for _, sp := range systemPaths {
+		if upper == sp || strings.HasPrefix(upper, sp+`\`) {
+			return true
+		}
+	}
+	// Also check Unix-style dangerous targets
+	return isDangerousTarget(arg)
+}
+
+// windowsDelRecursiveRule detects Windows "del /f /s /q" targeting dangerous
+// paths or wildcard patterns in dangerous locations.
+func windowsDelRecursiveRule() rule {
+	const ruleName = "windows-del-recursive"
+
+	matchInner := func(fields []string) (ClassifyResult, bool) {
+		if len(fields) < 2 {
+			return ClassifyResult{}, false
+		}
+		cmd := strings.ToLower(baseCommand(fields[0]))
+		if cmd != "del" && cmd != "erase" {
+			return ClassifyResult{}, false
+		}
+		// Check for /s (recursive) flag.
+		hasS := false
+		for _, f := range fields[1:] {
+			if isCommandSeparator(f) {
+				break
+			}
+			if strings.EqualFold(f, "/s") {
+				hasS = true
+				break
+			}
+		}
+		if !hasS {
+			return ClassifyResult{}, false
+		}
+		// Check targets.
+		for _, f := range fields[1:] {
+			if isCommandSeparator(f) {
+				break
+			}
+			if isWindowsFlag(f) {
+				continue
+			}
+			// "del /f /s /q *" in any directory, or targeting dangerous paths.
+			if f == "*" || f == "*.*" || isWindowsDangerousTarget(f) {
+				return ClassifyResult{
+					Decision: Forbidden,
+					Reason:   "recursive file deletion targeting dangerous path or wildcard",
+					Rule:     ruleName,
+				}, true
+			}
+		}
+		return ClassifyResult{}, false
+	}
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			return matchInner(strings.Fields(command))
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			fields := make([]string, 0, 1+len(args))
+			fields = append(fields, name)
+			fields = append(fields, args...)
+			return matchInner(fields)
+		},
+	}
+}
+
+// windowsFormatRule detects the Windows "format" command targeting drives.
+func windowsFormatRule() rule {
+	const ruleName = "windows-format"
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			fields := strings.Fields(command)
+			if len(fields) < 2 {
+				return ClassifyResult{}, false
+			}
+			if strings.ToLower(baseCommand(fields[0])) != "format" {
+				return ClassifyResult{}, false
+			}
+			// "format C:" or "format C: /y /fs:ntfs" etc.
+			for _, f := range fields[1:] {
+				if isCommandSeparator(f) {
+					break
+				}
+				upper := strings.ToUpper(f)
+				if len(upper) >= 2 && upper[0] >= 'A' && upper[0] <= 'Z' && upper[1] == ':' {
+					return ClassifyResult{
+						Decision: Forbidden,
+						Reason:   "formatting a drive is forbidden",
+						Rule:     ruleName,
+					}, true
+				}
+			}
+			return ClassifyResult{}, false
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			if strings.ToLower(baseCommand(name)) != "format" {
+				return ClassifyResult{}, false
+			}
+			for _, a := range args {
+				if isCommandSeparator(a) {
+					break
+				}
+				upper := strings.ToUpper(a)
+				if len(upper) >= 2 && upper[0] >= 'A' && upper[0] <= 'Z' && upper[1] == ':' {
+					return ClassifyResult{
+						Decision: Forbidden,
+						Reason:   "formatting a drive is forbidden",
+						Rule:     ruleName,
+					}, true
+				}
+			}
+			return ClassifyResult{}, false
+		},
+	}
+}
+
+// powershellDestructiveRule detects PowerShell commands that recursively delete
+// files or directories: Remove-Item -Recurse -Force targeting dangerous paths.
+func powershellDestructiveRule() rule {
+	const ruleName = "powershell-destructive"
+
+	matchInner := func(fields []string) (ClassifyResult, bool) {
+		if len(fields) < 2 {
+			return ClassifyResult{}, false
+		}
+		cmd := strings.ToLower(fields[0])
+		// Match Remove-Item and ri (PowerShell cmdlet and its shortest alias).
+		// Other PowerShell aliases (rm, del, erase, rmdir, rd) are handled by
+		// dedicated Windows rules: windowsRecursiveDeleteRule and
+		// windowsDelRecursiveRule.
+		if cmd != "remove-item" && cmd != "ri" {
+			return ClassifyResult{}, false
+		}
+		hasRecurse := false
+		for _, f := range fields[1:] {
+			lower := strings.ToLower(f)
+			if lower == "-recurse" || lower == "-r" {
+				hasRecurse = true
+			}
+		}
+		if !hasRecurse {
+			return ClassifyResult{}, false
+		}
+		// Check path arguments for dangerous targets.
+		for _, f := range fields[1:] {
+			if strings.HasPrefix(f, "-") {
+				continue
+			}
+			if isWindowsDangerousTarget(f) || isDangerousTarget(f) {
+				return ClassifyResult{
+					Decision: Forbidden,
+					Reason:   "PowerShell recursive deletion targeting dangerous path",
+					Rule:     ruleName,
+				}, true
+			}
+		}
+		return ClassifyResult{}, false
+	}
+
+	return rule{
+		Name: ruleName,
+		Match: func(command string) (ClassifyResult, bool) {
+			return matchInner(strings.Fields(command))
+		},
+		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
+			fields := make([]string, 0, 1+len(args))
+			fields = append(fields, name)
+			fields = append(fields, args...)
+			return matchInner(fields)
+		},
+	}
 }
 
 // xargsTargetCommand returns the command that xargs will execute, skipping over
