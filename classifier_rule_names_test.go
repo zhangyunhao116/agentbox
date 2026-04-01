@@ -10,8 +10,8 @@ import (
 
 func TestBuiltinRuleNamesCount(t *testing.T) {
 	names := BuiltinRuleNames()
-	// There are 45 built-in rules: 15 forbidden + 24 escalated + 6 allow.
-	const wantCount = 45
+	// There are 63 built-in rules: 20 forbidden + 28 escalated + 15 allow.
+	const wantCount = 63
 	if got := len(names); got != wantCount {
 		t.Errorf("BuiltinRuleNames() returned %d names, want %d", got, wantCount)
 	}

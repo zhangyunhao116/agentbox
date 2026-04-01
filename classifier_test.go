@@ -452,17 +452,50 @@ func TestIsSimpleCommand(t *testing.T) {
 		{"and operator", "echo a && echo b", false},
 		{"or operator", "echo a || echo b", false},
 		{"semicolon", "echo a; echo b", false},
-		{"pipe is allowed", "echo a | grep b", true},
-		{"and inside double quotes", `echo "hello && world"`, true},
-		{"and inside single quotes", "echo 'hello && world'", true},
-		{"semicolon inside quotes", `echo "a; b"`, true},
+		{"pipe is rejected", "echo a | grep b", false},
+		{"and inside double quotes", `echo "hello && world"`, false},
+		{"and inside single quotes", "echo 'hello && world'", false},
+		{"semicolon inside quotes", `echo "a; b"`, false},
 		{"pipe inside subshell", "echo $(cat | head)", true},
-		{"pipe inside backticks", "echo `cat | head`", true},
+		{"pipe inside backticks", "echo `cat | head`", false},
 		{"empty", "", true},
 		{"single word", "ls", true},
-		{"background ampersand only", "echo a &", true},
+		{"background ampersand only", "echo a &", false},
 		{"compound after quoted", `echo "safe" && rm -rf /`, false},
-		{"or inside single quotes", "echo 'a || b'", true},
+		{"or inside single quotes", "echo 'a || b'", false},
+		// Pipe-related test cases.
+		{"pipe command", "cat foo | head", false},
+		{"pipe stderr", "cmd |& grep err", false},
+		{"single bar in string", "echo '|'", false},
+		{"pipe inside double quotes", `echo "a | b"`, false},
+		// Redirect-related test cases (BUG-50K-1).
+		{"output redirect", "echo hello > file.txt", false},
+		{"append redirect", "echo hello >> file.txt", false},
+		{"input redirect", "cat < input.txt", false},
+		{"heredoc", "cat << 'EOF'", false},
+		{"fd merge 2>&1 is safe", "cmd 2>&1", true},
+		{"fd merge >&2 is safe", "cmd >&2", true},
+		{"fd merge 1>&2 is safe", "cmd 1>&2", true},
+		{"redirect in single quotes", "echo '> file.txt'", false},
+		{"redirect in double quotes", `echo "> file.txt"`, false},
+		{"redirect in subshell", "echo $(cat > /dev/null)", true},
+		{"redirect in backticks", "echo `cat > /dev/null`", false},
+		{"cat heredoc write", "cat > /tmp/file.py << 'EOF'", false},
+		// Unmatched-quote tests (BUG-ALLOW-4): apostrophes in paths
+		// must not hide compound operators from the scanner.
+		{"unmatched single quote hides &&", "cd /Users/moruomi/Desktop/Mia's WorkBuddy/PPT测试 && python3 -m markitdown test.pptx", false},
+		{"unmatched single quote hides && (2)", "cd /Volumes/happy's硬盘 && python3 read.py", false},
+		{"unmatched single quote hides && (3)", "cd /path/it's here && rm -rf /", false},
+		{"matched quotes still work", `echo "hello's world"`, true},
+		{"apostrophe no operator", "cat file_that's_ok.txt", true},
+		{"unmatched single quote no operator", "cat Mia's file.txt", true},
+		{"unmatched double quote hides &&", `cd "some dir && echo hi`, false},
+		{"unmatched backtick hides &&", "echo `hello && world", false},
+		// Even-count stray quotes that pair up and hide operators.
+		{"two apostrophes hide &&", `ls /tmp/it's here && rm -rf /tmp/that's bad`, false},
+		{"two apostrophes hide pipe", `cat it's data | rm -rf Mia's folder`, false},
+		{"two stray double quotes hide &&", `ls path"one && rm -rf path"two`, false},
+		{"two stray backticks hide &&", "ls path`one && rm -rf path`two", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -494,6 +527,10 @@ func TestClassifierCompoundCommandNotAllowed(t *testing.T) {
 		{"git status and rm", "git status && rm -rf /"},
 		{"git log or shutdown", "git log || shutdown -h now"},
 		{"git diff semicolon reboot", "git diff; reboot"},
+		// Output redirect should prevent Allow classification (BUG-50K-1).
+		{"echo redirect to file", "echo hello > /tmp/out.txt"},
+		{"echo append to file", "echo hello >> /tmp/out.txt"},
+		{"cat heredoc write", "cat > /tmp/script.py << 'EOF'"},
 	}
 	for _, tt := range notAllow {
 		t.Run(tt.name, func(t *testing.T) {
@@ -513,17 +550,279 @@ func TestClassifierCompoundCommandNotAllowed(t *testing.T) {
 		{"simple ls", "ls -la"},
 		{"simple which", "which python"},
 		{"simple cat", "cat file.txt"},
-		{"echo with quoted and", `echo "hello && world"`},
-		{"echo with quoted semicolon", `echo "a; b"`},
 		{"git status", "git status"},
 		{"git log oneline", "git log --oneline"},
 		{"git diff", "git diff HEAD"},
+		// fd-to-fd merges (2>&1) are safe — command stays simple.
+		{"echo with stderr merge", "echo hello 2>&1"},
 	}
 	for _, tt := range stillAllow {
 		t.Run(tt.name, func(t *testing.T) {
 			r := c.Classify(tt.cmd)
 			if r.Decision != Allow {
 				t.Errorf("Classify(%q) = %v (rule=%s), want Allow", tt.cmd, r.Decision, r.Rule)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix 1: isSimpleCommand rejects bare & (Windows command separator)
+// ---------------------------------------------------------------------------
+
+func TestIsSimpleCommandBareAmpersand(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    bool
+	}{
+		{"windows command chain", "ping 127.0.0.1 > nul & shutdown /s /t 0", false},
+		{"cd and pwd", "cd & pwd", false},
+		{"trailing ampersand", "echo hello &", false},
+		{"double ampersand still rejected", "echo hello && echo world", false},
+		{"ampersand inside double quotes", `echo "a & b"`, false},
+		{"ampersand inside single quotes", "echo 'a & b'", false},
+		{"ampersand inside subshell", "echo $(echo a & b)", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isSimpleCommand(tt.command)
+			if got != tt.want {
+				t.Errorf("isSimpleCommand(%q) = %v, want %v", tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix 2: go-tool rejects state-modifying subcommands
+// ---------------------------------------------------------------------------
+
+func TestClassifierGoToolRejectsStateModify(t *testing.T) {
+	c := DefaultClassifier()
+
+	notAllow := []struct {
+		name string
+		cmd  string
+	}{
+		{"go install", "go install github.com/foo/bar@latest"},
+		{"go get", "go get github.com/foo/bar"},
+		{"go env -w", "go env -w CGO_ENABLED=1"},
+		{"go env -w middle", "go env GOPATH -w GOPROXY=direct"},
+	}
+	for _, tt := range notAllow {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision == Allow {
+				t.Errorf("Classify(%q) = Allow (rule=%s), want non-Allow", tt.cmd, r.Rule)
+			}
+		})
+	}
+
+	// Safe go subcommands should still be allowed.
+	stillAllow := []struct {
+		name string
+		cmd  string
+	}{
+		{"go build", "go build ./..."},
+		{"go test", "go test ./..."},
+		{"go vet", "go vet ./..."},
+		{"go run", "go run main.go"},
+		{"go fmt", "go fmt ./..."},
+		{"go env read", "go env GOPATH"},
+		{"go mod tidy", "go mod tidy"},
+		{"gofmt", "gofmt -w main.go"},
+		{"golangci-lint", "golangci-lint run"},
+	}
+	for _, tt := range stillAllow {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != Allow {
+				t.Errorf("Classify(%q) = %v (rule=%s), want Allow", tt.cmd, r.Decision, r.Rule)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix 3: dev-tool-run rejects install-wrapping patterns
+// ---------------------------------------------------------------------------
+
+func TestClassifierDevToolRunRejectsInstall(t *testing.T) {
+	c := DefaultClassifier()
+
+	notAllow := []struct {
+		name string
+		cmd  string
+	}{
+		{"py -m pip install", "py -m pip install requests"},
+		{"python3 -m pip install", "python3 -m pip install pyinstaller"},
+		{"python -m pip3 install", "python -m pip3 install flask"},
+		{"py -3 -m pip install", "py -3 -m pip install pyinstaller"},
+		{"npx install", "npx clawhub install some-pkg"},
+		{"uvx install", "uvx sometool install pkg"},
+	}
+	for _, tt := range notAllow {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision == Allow {
+				t.Errorf("Classify(%q) = Allow (rule=%s), want non-Allow", tt.cmd, r.Rule)
+			}
+		})
+	}
+
+	// Normal dev tool usage should still be allowed.
+	stillAllow := []struct {
+		name string
+		cmd  string
+	}{
+		{"python script", "python script.py"},
+		{"py script", "py main.py"},
+		{"node script", "node index.js"},
+		{"npx create app", "npx create-react-app myapp"},
+		{"python -m http.server", "python3 -m http.server 8080"},
+	}
+	for _, tt := range stillAllow {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != Allow {
+				t.Errorf("Classify(%q) = %v (rule=%s), want Allow", tt.cmd, r.Decision, r.Rule)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix 4: open-command restricts Windows "start" to URLs
+// ---------------------------------------------------------------------------
+
+func TestClassifierOpenCommandStartRestricted(t *testing.T) {
+	c := DefaultClassifier()
+
+	notAllow := []struct {
+		name string
+		cmd  string
+	}{
+		{"start photoshop", "start photoshop"},
+		{"start executable", "start py merge_excel.py"},
+		{"start notepad", "start notepad.exe"},
+		{"start with flag", "start /min calc"},
+		// Protocols not in the safe list (file, evil, etc.) must NOT be allowed.
+		{"start file protocol", "start file:///C:/Windows/System32/cmd.exe"},
+		{"start evil protocol", "start evil://payload"},
+	}
+	for _, tt := range notAllow {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision == Allow {
+				t.Errorf("Classify(%q) = Allow (rule=%s), want non-Allow", tt.cmd, r.Rule)
+			}
+		})
+	}
+
+	// URLs and safe protocols should still be allowed.
+	stillAllow := []struct {
+		name string
+		cmd  string
+	}{
+		{"start https URL", "start https://example.com"},
+		{"start http URL", "start http://localhost:3000"},
+		{"start ms-settings", "start ms-settings:display"},
+		{"start mailto", "start mailto:user@example.com"},
+		{"open (macOS)", "open https://example.com"},
+		{"open file (macOS)", "open readme.txt"},
+		{"xdg-open", "xdg-open https://example.com"},
+	}
+	for _, tt := range stillAllow {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != Allow {
+				t.Errorf("Classify(%q) = %v (rule=%s), want Allow", tt.cmd, r.Decision, r.Rule)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix 5: shell-builtin rejects output redirection and clipboard pipes
+// ---------------------------------------------------------------------------
+
+func TestClassifierShellBuiltinRejectsRedirect(t *testing.T) {
+	c := DefaultClassifier()
+
+	notAllow := []struct {
+		name string
+		cmd  string
+	}{
+		{"printf redirect", "printf 'hello' > /tmp/file"},
+		{"printf append", "printf 'hello' >> /tmp/file"},
+		{"export redirect", "export FOO=bar > /tmp/out"},
+		{"printf pipe pbcopy", "printf 'text' | pbcopy"},
+		{"printf pipe xclip", "printf 'text' | xclip"},
+		{"printf pipe clip", "printf 'text' | clip"},
+	}
+	for _, tt := range notAllow {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision == Allow {
+				t.Errorf("Classify(%q) = Allow (rule=%s), want non-Allow", tt.cmd, r.Rule)
+			}
+		})
+	}
+
+	// Normal builtins without redirection should still be allowed.
+	// Note: commands with operators inside quotes (e.g. printf "hello > world")
+	// are conservatively rejected by the paranoid isSimpleCommand check and
+	// classified as Sandboxed instead of Allow.
+	stillAllow := []struct {
+		name string
+		cmd  string
+	}{
+		{"printf simple", "printf 'hello world'"},
+		{"export var", "export FOO=bar"},
+		{"set variable", "set -x"},
+		{"alias", "alias ll='ls -la'"},
+	}
+	for _, tt := range stillAllow {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != Allow {
+				t.Errorf("Classify(%q) = %v (rule=%s), want Allow", tt.cmd, r.Decision, r.Rule)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// hasOutputRedirectOrClipboardPipe unit tests
+// ---------------------------------------------------------------------------
+
+func TestHasOutputRedirectOrClipboardPipe(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    bool
+	}{
+		{"simple redirect", "echo hello > file", true},
+		{"append redirect", "echo hello >> file", true},
+		{"pipe to pbcopy", "echo hello | pbcopy", true},
+		{"pipe to xclip", "echo hello | xclip", true},
+		{"pipe to xsel", "echo hello | xsel", true},
+		{"pipe to clip", "echo hello | clip", true},
+		{"stderr merge ignored", "echo hello 2>&1", false},
+		{"redirect in double quotes", `echo "hello > world"`, false},
+		{"redirect in single quotes", "echo 'hello > world'", false},
+		{"no redirect", "echo hello world", false},
+		{"pipe to non-clipboard", "echo hello | grep hi", false},
+		// Path-qualified clipboard tools must also be detected.
+		{"pipe to /usr/bin/pbcopy", "printf test | /usr/bin/pbcopy", true},
+		{"pipe to /usr/bin/xclip", "echo hi | /usr/bin/xclip", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasOutputRedirectOrClipboardPipe(tt.command)
+			if got != tt.want {
+				t.Errorf("hasOutputRedirectOrClipboardPipe(%q) = %v, want %v", tt.command, got, tt.want)
 			}
 		})
 	}

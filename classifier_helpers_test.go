@@ -18,6 +18,16 @@ func TestClassifierBaseCommand(t *testing.T) {
 		{"/usr/local/bin/bash", "bash"},
 		{"./script.sh", "script.sh"},
 		{"", ""},
+		// Windows .exe suffix stripping (BUG-50K-2).
+		{"python.exe", "python"},
+		{"pip.exe", "pip"},
+		{"python3.exe", "python3"},
+		{"curl.exe", "curl"},
+		{"cmd.EXE", "cmd"},         // case-insensitive suffix
+		{"node.CMD", "node"},        // .cmd suffix
+		{"script.BAT", "script"},    // .bat suffix
+		{"C:\\Python39\\python.exe", "python"}, // Windows backslash path
+		{`C:\Users\me\pip.exe`, "pip"},         // Windows path with .exe
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -358,7 +368,7 @@ func TestContainsFlag(t *testing.T) {
 }
 
 func TestIsRedirectTerminator(t *testing.T) {
-	terminators := []byte{' ', '\t', '\n', ';', '&', '|', ')', '<', '>'}
+	terminators := []byte{' ', '\t', '\n', ';', '&', '|', ')', '<', '>', '{', '}'}
 	for _, c := range terminators {
 		if !isRedirectTerminator(c) {
 			t.Errorf("isRedirectTerminator(%q) = false, want true", c)
@@ -492,6 +502,39 @@ func TestArgsHaveRecursiveFlag(t *testing.T) {
 			got := argsHaveRecursiveFlag(tt.args)
 			if got != tt.want {
 				t.Errorf("argsHaveRecursiveFlag(%v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isPythonLauncher helper tests
+// ---------------------------------------------------------------------------
+
+func TestIsPythonLauncher(t *testing.T) {
+	tests := []struct {
+		name string
+		base string
+		want bool
+	}{
+		{"python", "python", true},
+		{"python3", "python3", true},
+		{"py", "py", true},
+		{"python3.11", "python3.11", true},
+		{"python3.9", "python3.9", true},
+		{"python3.12", "python3.12", true},
+		{"python2", "python2", false},
+		{"pip", "pip", false},
+		{"node", "node", false},
+		{"python3.", "python3.", false},
+		{"python3.abc", "python3.abc", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isPythonLauncher(tt.base)
+			if got != tt.want {
+				t.Errorf("isPythonLauncher(%q) = %v, want %v", tt.base, got, tt.want)
 			}
 		})
 	}

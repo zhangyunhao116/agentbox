@@ -1,6 +1,7 @@
 package agentbox
 
 import (
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -222,9 +223,12 @@ func (c *protectedPathClassifier) checkGitArgs(args []string) ClassifyResult {
 }
 
 // matchPath checks if a path matches any protected path pattern.
-func (c *protectedPathClassifier) matchPath(path string) ClassifyResult {
-	// Normalize: strip leading "./" for consistent matching.
-	clean := strings.TrimPrefix(path, "./")
+// Paths are normalized with path.Clean to prevent traversal bypasses
+// (e.g. "foo/../.git/hooks/pre-commit" → ".git/hooks/pre-commit").
+func (c *protectedPathClassifier) matchPath(p string) ClassifyResult {
+	// Normalize: clean traversal sequences and strip leading "./" for consistent matching.
+	clean := path.Clean(p)
+	clean = strings.TrimPrefix(clean, "./")
 	for _, pp := range c.paths {
 		matched, err := filepath.Match(pp.Pattern, clean)
 		if err != nil {

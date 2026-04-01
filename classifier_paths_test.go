@@ -501,6 +501,40 @@ func TestProtectedPathClassifier_InstallCommand(t *testing.T) {
 	}
 }
 
+// --- Path traversal bypass tests ---
+
+func TestProtectedPathTraversal(t *testing.T) {
+	c := &protectedPathClassifier{paths: defaultProtectedPaths}
+
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		// Traversal via ../  should be cleaned and matched as .git/hooks/*
+		{"rm foo/../.git/hooks/pre-commit", "rm foo/../.git/hooks/pre-commit", Forbidden},
+		{"rm a/b/../../.git/hooks/pre-commit", "rm a/b/../../.git/hooks/pre-commit", Forbidden},
+		// ./ prefix already works, verify it still does
+		{"rm ./.git/hooks/pre-commit", "rm ./.git/hooks/pre-commit", Forbidden},
+		// Traversal to .agent/ directory
+		{"rm foo/../.agent/config", "rm foo/../.agent/config", Forbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v, want %v", tt.cmd, r.Decision, tt.want)
+			}
+		})
+	}
+
+	// ClassifyArgs variant
+	r := c.ClassifyArgs("rm", []string{"foo/../.git/hooks/pre-commit"})
+	if r.Decision != Forbidden {
+		t.Errorf("ClassifyArgs rm foo/../.git/hooks/pre-commit: got %v, want Forbidden", r.Decision)
+	}
+}
+
 // --- containsFlagPrefix tests ---
 
 func TestContainsFlagPrefix(t *testing.T) {

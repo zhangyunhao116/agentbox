@@ -33,7 +33,7 @@ func ExampleDefaultClassifier() {
 	// allow
 	// forbidden
 	// escalated
-	// sandboxed
+	// allow
 }
 
 // ExampleWithCustomRules demonstrates adding user-defined classification
@@ -88,6 +88,6 @@ func ExampleBuiltinRuleNames() {
 	fmt.Println("total rules:", len(names))
 	fmt.Println("first rule:", names[0])
 	// Output:
-	// total rules: 45
+	// total rules: 63
 	// first rule: fork-bomb
 }
