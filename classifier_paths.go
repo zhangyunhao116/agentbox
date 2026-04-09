@@ -43,9 +43,9 @@ var defaultProtectedPaths = []ProtectedPath{
 }
 
 // writeCommands are commands that perform write operations on file paths.
-var writeCommands = map[string]bool{
-	"rm": true, "mv": true, "chmod": true, "chown": true,
-	"tee": true, "truncate": true, "install": true,
+var writeCommands = map[string]struct{}{
+	"rm": {}, "mv": {}, "chmod": {}, "chown": {},
+	"tee": {}, "truncate": {}, "install": {},
 }
 
 // Compile-time interface check.
@@ -160,7 +160,7 @@ func (c *protectedPathClassifier) checkWriteCommand(command string) ClassifyResu
 	if cmd == cmdGit {
 		return c.checkGitFields(fields[1:])
 	}
-	if !writeCommands[cmd] {
+	if _, ok := writeCommands[cmd]; !ok {
 		return ClassifyResult{}
 	}
 	// Check all non-flag arguments for protected path matches.
@@ -256,7 +256,8 @@ func (c *protectedPathClassifier) matchPath(p string) ClassifyResult {
 
 // isWriteCommand returns true if the command name is a known write operation.
 func isWriteCommand(cmd string) bool {
-	return writeCommands[cmd]
+	_, ok := writeCommands[cmd]
+	return ok
 }
 
 // containsFlagPrefix checks if a flag (or a flag with a value suffix) is

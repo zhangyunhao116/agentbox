@@ -507,12 +507,12 @@ func TestDefaultSanitizeConfig(t *testing.T) {
 	cfg := DefaultSanitizeConfig()
 
 	// Must contain at least the well-known exact keys.
-	exactSet := make(map[string]bool, len(cfg.ExactKeys))
+	exactSet := make(map[string]struct{}, len(cfg.ExactKeys))
 	for _, k := range cfg.ExactKeys {
-		exactSet[k] = true
+		exactSet[k] = struct{}{}
 	}
 	for _, want := range []string{"LD_PRELOAD", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN"} {
-		if !exactSet[want] {
+		if _, ok := exactSet[want]; !ok {
 			t.Errorf("DefaultSanitizeConfig().ExactKeys missing %q", want)
 		}
 	}

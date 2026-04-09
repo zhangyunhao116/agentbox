@@ -80,7 +80,7 @@ func MergeEnv(base, additional []string) []string {
 	}
 
 	// Copy base, replacing any overridden keys.
-	replaced := make(map[string]bool, len(overrides))
+	replaced := make(map[string]struct{}, len(overrides))
 	result := make([]string, 0, len(base)+len(additional))
 	for _, e := range base {
 		key := e
@@ -89,7 +89,7 @@ func MergeEnv(base, additional []string) []string {
 		}
 		if override, ok := overrides[key]; ok {
 			result = append(result, override)
-			replaced[key] = true
+			replaced[key] = struct{}{}
 		} else {
 			result = append(result, e)
 		}
@@ -97,7 +97,7 @@ func MergeEnv(base, additional []string) []string {
 
 	// Append any additional vars that weren't in base, preserving order.
 	for _, key := range overrideOrder {
-		if !replaced[key] {
+		if _, ok := replaced[key]; !ok {
 			result = append(result, overrides[key])
 		}
 	}
@@ -107,16 +107,16 @@ func MergeEnv(base, additional []string) []string {
 
 // sensitiveExactKeys is the set of environment variable names that are
 // unconditionally removed by SanitizeEnv.
-var sensitiveExactKeys = map[string]bool{
-	"LD_PRELOAD":            true,
-	"LD_LIBRARY_PATH":       true,
-	"AWS_SECRET_ACCESS_KEY": true,
-	"AWS_SESSION_TOKEN":     true,
-	"GITHUB_TOKEN":          true,
-	"GH_TOKEN":              true,
-	"GITHUB_PAT":            true,
-	"DOCKER_AUTH_CONFIG":    true,
-	"NPM_TOKEN":             true,
+var sensitiveExactKeys = map[string]struct{}{
+	"LD_PRELOAD":            {},
+	"LD_LIBRARY_PATH":       {},
+	"AWS_SECRET_ACCESS_KEY": {},
+	"AWS_SESSION_TOKEN":     {},
+	"GITHUB_TOKEN":          {},
+	"GH_TOKEN":              {},
+	"GITHUB_PAT":            {},
+	"DOCKER_AUTH_CONFIG":    {},
+	"NPM_TOKEN":             {},
 }
 
 // sensitiveSuffixes lists the upper-case suffixes that cause a variable to be
@@ -164,13 +164,13 @@ func SanitizeEnv(env []string) []string {
 // _AGENTBOX_CONFIG variable is always preserved regardless of config.
 func SanitizeEnvWith(env []string, cfg SanitizeConfig) []string {
 	// Build lookup structures for efficient matching.
-	exactSet := make(map[string]bool, len(cfg.ExactKeys))
+	exactSet := make(map[string]struct{}, len(cfg.ExactKeys))
 	for _, k := range cfg.ExactKeys {
-		exactSet[k] = true
+		exactSet[k] = struct{}{}
 	}
-	preserveSet := make(map[string]bool, len(cfg.Preserve))
+	preserveSet := make(map[string]struct{}, len(cfg.Preserve))
 	for _, k := range cfg.Preserve {
-		preserveSet[k] = true
+		preserveSet[k] = struct{}{}
 	}
 
 	result := make([]string, 0, len(env))
@@ -187,12 +187,12 @@ func SanitizeEnvWith(env []string, cfg SanitizeConfig) []string {
 		}
 
 		// Honor explicit preserve list.
-		if preserveSet[key] {
+		if _, ok := preserveSet[key]; ok {
 			result = append(result, e)
 			continue
 		}
 
-		if exactSet[key] {
+		if _, ok := exactSet[key]; ok {
 			continue
 		}
 

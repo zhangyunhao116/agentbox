@@ -8,11 +8,91 @@ package agentbox
 import (
 	"path"
 	"strings"
+	"sync"
 )
+
+// classifyCtx holds precomputed values for a single classification call.
+// It is obtained from a sync.Pool via acquireCtx and must be released with
+// releaseCtx after use. Rules that implement MatchCtx receive a pointer to
+// this struct and read from its fields instead of calling strings.Fields,
+// strings.ToLower, or baseCommand independently.
+//
+// Fields are lazily initialized on first access via the ensure* methods so
+// that early-matching rules (e.g. forkBomb detected on the first rule) do
+// not pay for precomputation they never need.
+type classifyCtx struct {
+	cmd    string   // the command string these values were computed for
+	lower  string   // strings.ToLower(cmd) — lazy
+	fields []string // strings.Fields(cmd) — lazy
+	base   string   // baseCommand applied to the first field — lazy
+
+	lowerDone  bool
+	fieldsDone bool
+	baseDone   bool
+}
+
+// classifyCtxPool recycles classifyCtx objects to avoid per-call allocation.
+var classifyCtxPool = sync.Pool{
+	New: func() any { return new(classifyCtx) },
+}
+
+// acquireCtx gets a classifyCtx from the pool. Fields are lazily computed
+// on first access via Lower(), Fields(), Base().
+func acquireCtx(cmd string) *classifyCtx {
+	ctx := classifyCtxPool.Get().(*classifyCtx)
+	ctx.cmd = cmd
+	ctx.lowerDone = false
+	ctx.fieldsDone = false
+	ctx.baseDone = false
+	return ctx
+}
+
+// releaseCtx returns a classifyCtx to the pool after clearing its fields.
+func releaseCtx(ctx *classifyCtx) {
+	ctx.cmd = ""
+	ctx.lower = ""
+	ctx.fields = nil
+	ctx.base = ""
+	classifyCtxPool.Put(ctx)
+}
+
+// Lower returns strings.ToLower(cmd), computing it on first call.
+func (ctx *classifyCtx) Lower() string {
+	if !ctx.lowerDone {
+		ctx.lower = strings.ToLower(ctx.cmd)
+		ctx.lowerDone = true
+	}
+	return ctx.lower
+}
+
+// Fields returns strings.Fields(cmd), computing it on first call.
+func (ctx *classifyCtx) Fields() []string {
+	if !ctx.fieldsDone {
+		ctx.fields = strings.Fields(ctx.cmd)
+		ctx.fieldsDone = true
+	}
+	return ctx.fields
+}
+
+// Base returns baseCommand(fields[0]), computing it on first call.
+func (ctx *classifyCtx) Base() string {
+	if !ctx.baseDone {
+		f := ctx.Fields()
+		if len(f) > 0 {
+			ctx.base = baseCommand(f[0])
+		}
+		ctx.baseDone = true
+	}
+	return ctx.base
+}
 
 // pipeShells is the canonical list of shell and interpreter names used to
 // detect dangerous pipe-to-shell patterns across multiple rules.
 var pipeShells = [...]string{"sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python3", "perl", "ruby", "node"}
+
+// windowsExeSuffixes contains Windows executable suffixes to strip from
+// command names for uniform matching across platforms.
+var windowsExeSuffixes = []string{".exe", ".cmd", ".bat"}
 
 // baseCommand extracts the base name from a possibly path-qualified command.
 // Trailing slashes are stripped before extracting the base name. Windows
@@ -33,7 +113,7 @@ func baseCommand(cmd string) string {
 	}
 	// Strip common Windows executable suffixes.
 	lower := strings.ToLower(cmd)
-	for _, suffix := range []string{".exe", ".cmd", ".bat"} {
+	for _, suffix := range windowsExeSuffixes {
 		if strings.HasSuffix(lower, suffix) {
 			cmd = cmd[:len(cmd)-len(suffix)]
 			break
@@ -446,8 +526,8 @@ func isSimpleInputRedirect() (safe, reject bool) {
 }
 
 // clipboardTools lists commands that modify the system clipboard.
-var clipboardTools = map[string]bool{
-	"pbcopy": true, "xclip": true, "xsel": true, "clip": true,
+var clipboardTools = map[string]struct{}{
+	"pbcopy": {}, "xclip": {}, "xsel": {}, "clip": {},
 }
 
 // hasOutputRedirectOrClipboardPipe scans command (outside quotes and
@@ -484,7 +564,7 @@ func hasOutputRedirectOrClipboardPipe(command string) bool {
 			if idx := strings.IndexAny(rest, " \t"); idx >= 0 {
 				word = rest[:idx]
 			}
-			if clipboardTools[baseCommand(word)] {
+			if _, ok := clipboardTools[baseCommand(word)]; ok {
 				return true
 			}
 		}
@@ -528,7 +608,7 @@ func findGitSubcommand(fields []string) string {
 			if strings.Contains(f, "=") {
 				continue
 			}
-			if gitValueFlags[f] {
+			if _, ok := gitValueFlags[f]; ok {
 				skip = true
 			}
 			continue
@@ -549,18 +629,18 @@ func containsFlag(args []string, flag string) bool {
 }
 
 // gitValueFlags lists git global flags that consume the next argument as a value.
-var gitValueFlags = map[string]bool{
-	"-C":              true,
-	"-c":              true,
-	"--git-dir":       true,
-	"--work-tree":     true,
-	"--namespace":     true,
-	"--super-prefix":  true,
-	"--exec-path":     true,
-	"--config-env":    true,
-	"--list-cmds":     true,
-	"--attr-source":   true,
-	"--glob-pathspec": true,
+var gitValueFlags = map[string]struct{}{
+	"-C":              {},
+	"-c":              {},
+	"--git-dir":       {},
+	"--work-tree":     {},
+	"--namespace":     {},
+	"--super-prefix":  {},
+	"--exec-path":     {},
+	"--config-env":    {},
+	"--list-cmds":     {},
+	"--attr-source":   {},
+	"--glob-pathspec": {},
 }
 
 // ---------------------------------------------------------------------------
@@ -761,19 +841,19 @@ func stripExportPrefix(trimmed string) (string, bool) {
 
 // safePipeTargets lists commands that are safe read-only consumers at the end
 // of a pipeline. These only display, filter, or count output.
-var safePipeTargets = map[string]bool{
-	"head": true, "tail": true, "grep": true, "egrep": true, "fgrep": true,
-	"wc": true, "sort": true, "uniq": true, "less": true, "more": true,
-	"cat": true, "tee": true, "tr": true, "cut": true, "awk": true,
-	"sed": true, "fmt": true, "column": true, "nl": true, "rev": true,
+var safePipeTargets = map[string]struct{}{
+	"head": {}, "tail": {}, "grep": {}, "egrep": {}, "fgrep": {},
+	"wc": {}, "sort": {}, "uniq": {}, "less": {}, "more": {},
+	"cat": {}, "tee": {}, "tr": {}, "cut": {}, "awk": {},
+	"sed": {}, "fmt": {}, "column": {}, "nl": {}, "rev": {},
 }
 
 // dangerousPipeTargets lists interpreters that are dangerous as pipe targets
 // because they execute arbitrary code from stdin.
-var dangerousPipeTargets = map[string]bool{
-	"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true,
-	"python": true, "python3": true, "perl": true, "ruby": true, "node": true,
-	"eval": true, "exec": true, "xargs": true,
+var dangerousPipeTargets = map[string]struct{}{
+	"sh": {}, "bash": {}, "zsh": {}, "dash": {}, "ksh": {},
+	"python": {}, "python3": {}, "perl": {}, "ruby": {}, "node": {},
+	"eval": {}, "exec": {}, "xargs": {},
 }
 
 // stripSafeTrailingPipe removes the last pipe segment if it pipes into a
@@ -800,10 +880,10 @@ func stripSafeTrailingPipe(s string) string {
 		}
 	}
 
-	if dangerousPipeTargets[target] {
+	if _, ok := dangerousPipeTargets[target]; ok {
 		return s
 	}
-	if !safePipeTargets[target] {
+	if _, ok := safePipeTargets[target]; !ok {
 		return s
 	}
 

@@ -259,7 +259,7 @@ func (b *profileBuilder) writeDangerousFileProtection(cfg *platform.WrapConfig) 
 func (b *profileBuilder) writeMoveBlocking(cfg *platform.WrapConfig) {
 	b.comment("Prevent bypass via mv/rename of protected paths")
 	// Use a set to deduplicate ancestor rules.
-	seen := make(map[string]bool)
+	seen := make(map[string]struct{})
 
 	writePathRules := func(paths []string) {
 		for _, p := range paths {
@@ -268,8 +268,8 @@ func (b *profileBuilder) writeMoveBlocking(cfg *platform.WrapConfig) {
 			b.linef(`(deny file-write-unlink (subpath "%s"))`, escaped)
 			// Protect all ancestor directories to prevent bypass via moving parent.
 			for _, ancestor := range ancestorDirectories(cp) {
-				if !seen[ancestor] {
-					seen[ancestor] = true
+				if _, ok := seen[ancestor]; !ok {
+					seen[ancestor] = struct{}{}
 					b.linef(`(deny file-write-unlink (literal "%s"))`, escapeForSBPL(ancestor))
 				}
 			}

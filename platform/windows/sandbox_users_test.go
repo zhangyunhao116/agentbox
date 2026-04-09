@@ -60,16 +60,16 @@ func TestGenerateUsername(t *testing.T) {
 	}
 
 	// Check uniqueness - generate multiple usernames
-	usernames := make(map[string]bool)
+	usernames := make(map[string]struct{})
 	for i := 0; i < 10; i++ {
 		u, err := generateUsername()
 		if err != nil {
 			t.Fatalf("generateUsername failed on iteration %d: %v", i, err)
 		}
-		if usernames[u] {
+		if _, ok := usernames[u]; ok {
 			t.Errorf("duplicate username generated: %q", u)
 		}
-		usernames[u] = true
+		usernames[u] = struct{}{}
 	}
 }
 
@@ -138,16 +138,16 @@ func TestGeneratePasswordUniqueness(t *testing.T) {
 		t.Skip("Windows-only test")
 	}
 
-	passwords := make(map[string]bool)
+	passwords := make(map[string]struct{})
 	for i := 0; i < 100; i++ {
 		password, err := generatePassword(24)
 		if err != nil {
 			t.Fatalf("generatePassword failed on iteration %d: %v", i, err)
 		}
-		if passwords[password] {
+		if _, ok := passwords[password]; ok {
 			t.Errorf("duplicate password generated: %q", password)
 		}
-		passwords[password] = true
+		passwords[password] = struct{}{}
 	}
 }
 

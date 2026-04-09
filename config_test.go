@@ -268,9 +268,9 @@ func TestDefaultConfigDenyReadExpanded(t *testing.T) {
 	cfg := DefaultConfig()
 
 	// Check that DenyRead includes the new entries.
-	denyReadSet := make(map[string]bool)
+	denyReadSet := make(map[string]struct{})
 	for _, p := range cfg.Filesystem.DenyRead {
-		denyReadSet[p] = true
+		denyReadSet[p] = struct{}{}
 	}
 
 	home, _ := os.UserHomeDir()
@@ -285,7 +285,7 @@ func TestDefaultConfigDenyReadExpanded(t *testing.T) {
 		"/sys",
 	}
 	for _, e := range expected {
-		if !denyReadSet[e] {
+		if _, ok := denyReadSet[e]; !ok {
 			t.Errorf("DenyRead missing expected entry: %q", e)
 		}
 	}
