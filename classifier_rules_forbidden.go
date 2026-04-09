@@ -921,6 +921,41 @@ func checkFilesystemFormat(base string, args []string) (ClassifyResult, bool) {
 	return ClassifyResult{}, false
 }
 
+// matchAnyPipeToShell checks for ANY content piped to a shell interpreter.
+// This is broader than the curl/wget-specific check — piping arbitrary content
+// to bash/sh/zsh/etc. is dangerous regardless of the source.
+func matchAnyPipeToShell(command, ruleName string) (ClassifyResult, bool) {
+	if !strings.Contains(command, "|") {
+		return ClassifyResult{}, false
+	}
+	parts := splitTopLevelPipes(command)
+	if len(parts) < 2 {
+		return ClassifyResult{}, false
+	}
+	for _, part := range parts[1:] {
+		trimmed := strings.TrimSpace(part)
+		fields := strings.Fields(trimmed)
+		if len(fields) == 0 {
+			continue
+		}
+		target := baseCommand(fields[0])
+		for _, sh := range pipeShells {
+			if target == sh {
+				// python/python3 with -c or -m is safe (inline code, not stdin eval).
+				if (target == cmdPython || target == cmdPython3) && isPipeTargetSafePython(fields) {
+					continue
+				}
+				return ClassifyResult{
+					Decision: Forbidden,
+					Reason:   "piping content to a shell interpreter is dangerous",
+					Rule:     RuleName(ruleName),
+				}, true
+			}
+		}
+	}
+	return ClassifyResult{}, false
+}
+
 // pipeToShellRule detects piping untrusted content to a shell interpreter.
 // This is a combined rule that replaces the former curl-pipe-shell and
 // base64-pipe-shell rules. It checks for both curl/wget piping to shells and
@@ -972,7 +1007,11 @@ func pipeToShellRule() rule {
 				return r, true
 			}
 			// Check base64 decode pipe to shell.
-			return matchPipeToShellBase64(command, ruleName)
+			if r, ok := matchPipeToShellBase64(command, ruleName); ok {
+				return r, true
+			}
+			// Check any content piped to a shell interpreter.
+			return matchAnyPipeToShell(command, ruleName)
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
@@ -988,7 +1027,11 @@ func pipeToShellRule() rule {
 			}
 			// Check base64 decode pipe to shell.
 			full := name + " " + strings.Join(args, " ")
-			return matchPipeToShellBase64(full, ruleName)
+			if r, ok := matchPipeToShellBase64(full, ruleName); ok {
+				return r, true
+			}
+			// Check any content piped to a shell interpreter.
+			return matchAnyPipeToShell(full, ruleName)
 		},
 	}
 }
@@ -1391,6 +1434,21 @@ func findHasDestructiveAction(args []string) bool {
 	return false
 }
 
+// findHasActionFlag checks whether a find argument list contains any action
+// flag that could execute arbitrary commands or modify the filesystem.
+// This is broader than findHasDestructiveAction — it catches ALL exec-style
+// actions (not just rm), so the blanket "allow" for find can be skipped and
+// deeper rules (destructive-find, sandbox) can handle them properly.
+func findHasActionFlag(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "-exec", "-execdir", "-ok", "-okdir", "-delete":
+			return true
+		}
+	}
+	return false
+}
+
 func destructiveFindRule() rule {
 	return rule{
 		Name: "destructive-find",
@@ -1399,7 +1457,7 @@ func destructiveFindRule() rule {
 			if len(fields) < 2 {
 				return ClassifyResult{}, false
 			}
-			if baseCommand(fields[0]) != "find" {
+			if baseCommand(fields[0]) != cmdFind {
 				return ClassifyResult{}, false
 			}
 			if !findHasDestructiveAction(fields) {
@@ -1412,7 +1470,7 @@ func destructiveFindRule() rule {
 			}, true
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
-			if baseCommand(name) != "find" || len(args) == 0 {
+			if baseCommand(name) != cmdFind || len(args) == 0 {
 				return ClassifyResult{}, false
 			}
 			if !findHasDestructiveAction(args) {

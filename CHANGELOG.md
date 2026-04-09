@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **classifier**: Compound chain analysis — commands joined by `&&` or `;` are now classified segment-by-segment. If all segments are Allow → Allow; if any is Forbidden → Forbidden; if any is Escalated → Escalated. The `||` operator is intentionally not split (different short-circuit semantics). Splitting is quote-aware and respects `$()` subshells. Segments containing command substitution (`$()`, backticks) or subshells (`(...)`) are treated as unclassifiable for safety.
+- **classifier**: Broadened `pipe-to-shell` forbidden rule — ANY content piped to a shell interpreter (`bash`, `sh`, `zsh`, `dash`, `ksh`, `fish`) is now Forbidden, not just curl/wget sources. Added `fish` to the `pipeShells` list.
+- **classifier**: Quoted metacharacter sanitization — commands like `echo "hello && world"` are no longer falsely rejected by `isSimpleCommand`; quoted `&&`/`;` that are not actual operators are sanitized before classification (with guards for inline code execution and dangerous chars).
+- **classifier**: Expanded PowerShell read-only cmdlet coverage — `psCmdletsSafe` grew from 11 to 50+ entries including `Get-Service`, `Get-CimInstance`, `Get-NetAdapter`, `Get-Help`, `Measure-Object`, `Sort-Object`, `ConvertTo-Json`, `Where-Object`, `Resolve-DnsName`, `Test-NetConnection`, and many more.
+- **classifier**: Expanded `psCmdletsDangerous` with 13 additional dangerous cmdlets: `New-Item`, `New-Service`, `New-Object`, `Start-Process`, `Start-Service`, `Invoke-Expression`, `Invoke-Command`, `Invoke-WebRequest`, `Invoke-RestMethod`, `Set-Content`, `Set-ItemProperty`, `Add-Content`, `Add-Type`.
+- **classifier**: Expanded `windowsSafeCmds` with 6 additional safe commands: `where.exe`, `chcp`, `ver`, `set`, `hostname`, `whoami`.
+- **classifier**: New `RuleCompoundChainAllow` synthetic rule name for compound chain analysis results.
+
+- **classifier**: Command normalization pipeline (`normalizeForClassification`) that strips `cd /path &&`, `# comment\n`, `source ... &&`, env var prefixes, safe pipes (`| head`, `| tail`, `| grep`, `| wc`, `| sort`), and safe redirects (`2>&1`, `>/dev/null`, `2>/dev/null`) before rule matching — reduces false Sandboxed rate from ~85% to ~34% on real-world data
+- **classifier**: Dual-pass classification in `Classify()` and `ClassifyArgs()` — tries original command first, then normalized if Sandboxed; Forbidden results always honored for safety
+- **classifier**: `sshpass` now escalated by `ssh-command` rule (sshpass wraps SSH remote access)
+- **classifier**: `pytest` and `py.test` added to `dev-tool-run` allow rule
+- **classifier**: `find` added to `common-safe-commands` allow rule with safety guard — `find` with action flags (`-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`) falls through to Sandboxed or Forbidden
+- **classifier**: New `findHasActionFlag` helper that broadly detects find action flags (complementing the narrower `findHasDestructiveAction` used by the forbidden rule)
 - **classifier**: New `dev-tool-run` allow rule for scripting runtimes (python, node, ruby, perl, php, java, etc.)
 - **classifier**: New `build-tool` allow rule for build systems (make, cmake, cargo, mvn, gradle, gcc, clang, etc.)
 - **classifier**: New `go-tool` allow rule for Go ecosystem tools (go, gofmt, gopls, golangci-lint, etc.)
