@@ -53,6 +53,8 @@ const (
 	cmdDoas = "doas"
 	// cmdEnv is the env command name used as a prefix wrapper.
 	cmdEnv = "env"
+	// cmdFind is the find command name used in safe-command and destructive-find rules.
+	cmdFind = "find"
 )
 
 // Compile-time interface checks for classifier types in this file.
@@ -83,9 +85,9 @@ type ruleClassifier struct {
 	rules []rule
 }
 
-// Classify iterates through rules in order and returns the first match.
-// If no rule matches the command is classified as Sandboxed.
-func (c *ruleClassifier) Classify(command string) ClassifyResult {
+// classifyOnce runs all rules against a single command string and returns
+// the first match. If no rule matches it returns Sandboxed.
+func (c *ruleClassifier) classifyOnce(command string) ClassifyResult {
 	for _, r := range c.rules {
 		if r.Match != nil {
 			if result, ok := r.Match(command); ok {
@@ -99,16 +101,142 @@ func (c *ruleClassifier) Classify(command string) ClassifyResult {
 	}
 }
 
-// ClassifyArgs iterates through rules in order using MatchArgs, falling back
-// to Match with a reconstructed command string. If no rule matches the command
-// is classified as Sandboxed.
-func (c *ruleClassifier) ClassifyArgs(name string, args []string) ClassifyResult {
-	// Build a command string for rules that only implement Match.
-	parts := make([]string, 0, 1+len(args))
-	parts = append(parts, name)
-	parts = append(parts, args...)
-	command := strings.Join(parts, " ")
+// Classify iterates through rules in order and returns the first match.
+// If no rule matches the original command, a normalized form (stripping cd
+// prefixes, comments, env vars, safe pipes/redirects) is tried. This
+// dual-pass approach improves classification of real-world compound commands
+// while preserving safety: forbidden results are always returned immediately.
+func (c *ruleClassifier) Classify(command string) ClassifyResult {
+	result := c.classifyOnce(command)
+	if result.Decision != Sandboxed {
+		return result
+	}
 
+	// Attempt classification on the normalized form.
+	normalized := normalizeForClassification(command)
+	if normalized != command {
+		normResult := c.classifyOnce(normalized)
+		if normResult.Decision == Forbidden {
+			return normResult // safety: always honour Forbidden
+		}
+		if normResult.Decision != Sandboxed {
+			normResult.Reason += " (normalized)"
+			return normResult
+		}
+	}
+
+	// Pass 3: try compound chain analysis on the normalized command
+	// (which equals the original if normalization was a no-op).
+	chainResult := c.classifyCompoundChain(normalized)
+	if chainResult.Decision != Sandboxed {
+		return chainResult
+	}
+	return result // all three passes returned Sandboxed
+}
+
+// classifyCompoundChain splits a compound command on "&&" and ";" separators,
+// classifies each segment independently, and returns an aggregate result.
+// If ALL segments are Allow → Allow. If ANY is Forbidden → Forbidden.
+// If ANY is Escalated (and none Forbidden) → Escalated. Otherwise → Sandboxed.
+// The "||" operator is NOT split because its short-circuit semantics differ.
+//
+// For single-segment commands that contain quoted metacharacters (e.g.
+// echo "a && b"), it attempts classification with quoted content replaced
+// by a placeholder so that isSimpleCommand does not reject the harmless
+// metacharacters inside quotes.
+func (c *ruleClassifier) classifyCompoundChain(command string) ClassifyResult {
+	segments := splitCompoundCommand(command)
+	if len(segments) <= 1 {
+		// Not a compound chain — but the command may contain quoted
+		// metacharacters that isSimpleCommand conservatively rejects.
+		// Try classifying a quote-sanitized version, but skip sanitize
+		// when the command is a scripting runtime executing inline code
+		// (the semicolons inside the quoted code ARE significant).
+		cleaned := sanitizeQuotedContent(command)
+		if cleaned != command && !isInlineCodeExecution(command) {
+			r := c.classifyOnce(cleaned)
+			if r.Decision == Allow {
+				r.Reason += " (quoted metacharacters sanitized)"
+				return r
+			}
+		}
+		return ClassifyResult{Decision: Sandboxed, Reason: "not a compound command"}
+	}
+
+	// Guard: if splitting may have broken a find -exec ... ; construct,
+	// bail out — the ";" was a find terminator, not a command separator.
+	if hasExecSemicolonArtifact(segments) {
+		return ClassifyResult{Decision: Sandboxed, Reason: "compound split may have broken -exec terminator"}
+	}
+
+	highest := Allow // start optimistic
+	hasSandboxed := false
+	var highestResult ClassifyResult
+
+	for _, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+
+		// Safety: if a segment contains command substitution ($() or
+		// backticks) or is a subshell (parentheses), the inner command
+		// will be executed by the shell but is invisible to our
+		// classifier. Treat such segments as unclassifiable.
+		if containsCommandSubstitution(seg) {
+			hasSandboxed = true
+			continue
+		}
+
+		// Classify each segment (use classifyOnce, not full Classify to
+		// avoid recursion). Also try the normalized form of each segment.
+		result := c.classifyOnce(seg)
+		if result.Decision == Sandboxed {
+			norm := normalizeForClassification(seg)
+			if norm != seg {
+				result = c.classifyOnce(norm)
+			}
+		}
+
+		switch result.Decision {
+		case Forbidden:
+			return result // immediate: any Forbidden → whole chain Forbidden
+		case Escalated:
+			if highest < Escalated {
+				highest = Escalated
+				highestResult = result
+			}
+		case Sandboxed:
+			// Mark that we can't fully classify the chain, but continue
+			// scanning remaining segments so that Forbidden is still caught.
+			hasSandboxed = true
+		case Allow:
+			if highest == Allow && highestResult.Reason == "" {
+				highestResult = result
+			}
+		}
+	}
+
+	// If any segment was unclassified, we can't promote the whole chain.
+	if hasSandboxed {
+		return ClassifyResult{Decision: Sandboxed, Reason: "compound chain contains unclassified segment"}
+	}
+
+	if highest == Allow {
+		return ClassifyResult{
+			Decision: Allow,
+			Reason:   "all segments of compound command are allowed (chain analysis)",
+			Rule:     RuleCompoundChainAllow,
+		}
+	}
+	highestResult.Reason += " (compound chain)"
+	return highestResult
+}
+
+// classifyArgsOnce runs all rules against a parsed command (name + args) and
+// falls back to Match with the reconstructed command string. Returns the first
+// match or Sandboxed.
+func (c *ruleClassifier) classifyArgsOnce(name string, args []string, command string) ClassifyResult {
 	for _, r := range c.rules {
 		if r.MatchArgs != nil {
 			if result, ok := r.MatchArgs(name, args); ok {
@@ -125,6 +253,37 @@ func (c *ruleClassifier) ClassifyArgs(name string, args []string) ClassifyResult
 		Decision: Sandboxed,
 		Reason:   "no rule matched; defaulting to sandboxed execution",
 	}
+}
+
+// ClassifyArgs iterates through rules in order using MatchArgs, falling back
+// to Match with a reconstructed command string. If no rule matches, a
+// normalized form is tried (same dual-pass as Classify).
+func (c *ruleClassifier) ClassifyArgs(name string, args []string) ClassifyResult {
+	// Build a command string for rules that only implement Match.
+	parts := make([]string, 0, 1+len(args))
+	parts = append(parts, name)
+	parts = append(parts, args...)
+	command := strings.Join(parts, " ")
+
+	result := c.classifyArgsOnce(name, args, command)
+	if result.Decision != Sandboxed {
+		return result
+	}
+
+	// Attempt classification on the normalized form.
+	normalized := normalizeForClassification(command)
+	if normalized == command {
+		return result
+	}
+	normResult := c.classifyOnce(normalized)
+	if normResult.Decision == Forbidden {
+		return normResult
+	}
+	if normResult.Decision != Sandboxed {
+		normResult.Reason += " (normalized)"
+		return normResult
+	}
+	return result
 }
 
 // chainClassifier chains multiple Classifier implementations. The first

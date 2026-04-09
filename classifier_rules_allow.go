@@ -19,6 +19,7 @@ var commonSafeCommands = map[string]bool{
 	"df": true, "printenv": true, "id": true,
 	"uname": true, "hostname": true, "true": true, "false": true,
 	"test": true, "[": true,
+	"find": true,
 }
 
 // gitReadSubcommands lists git subcommands that are read-only.
@@ -179,10 +180,16 @@ func commonSafeCommandsRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			cmd := baseCommand(name)
-			if commonSafeCommands[cmd] {
-				return result, true
+			if !commonSafeCommands[cmd] {
+				return ClassifyResult{}, false
 			}
-			return ClassifyResult{}, false
+			// find with action flags (-exec, -delete, etc.) needs
+			// deeper analysis — skip the blanket allow so the
+			// destructive-find rule (or sandbox) handles it.
+			if cmd == cmdFind && findHasActionFlag(args) {
+				return ClassifyResult{}, false
+			}
+			return result, true
 		},
 	}
 }
@@ -353,14 +360,42 @@ func versionCheckRule() rule {
 var windowsSafeCmds = map[string]bool{
 	"where": true, "dir": true, "type": true, "findstr": true,
 	"ipconfig": true, "systeminfo": true, "tasklist": true,
+	"where.exe": true, "chcp": true, "ver": true, "set": true,
+	"hostname": true, "whoami": true,
 }
 
 // psCmdletsSafe is the set of PowerShell cmdlets considered safe (lowercase).
 var psCmdletsSafe = map[string]bool{
+	// Existing
 	"get-command": true, "get-process": true, "get-childitem": true,
 	"get-content": true, "get-location": true,
 	"select-object": true, "format-list": true, "format-table": true,
 	"write-output": true, "write-host": true, "test-path": true,
+	// Read-only Get-* cmdlets
+	"get-service": true, "get-item": true, "get-itemproperty": true,
+	"get-wmiobject": true, "get-ciminstance": true,
+	"get-netadapter": true, "get-nettcpconnection": true,
+	"get-date": true, "get-help": true, "get-member": true,
+	"get-psdrive": true, "get-volume": true, "get-computerinfo": true,
+	"get-pnpdevice": true, "get-winevent": true,
+	"get-acl": true, "get-clipboard": true, "get-culture": true,
+	"get-disk": true, "get-eventlog": true, "get-executionpolicy": true,
+	"get-filehash": true, "get-host": true, "get-hotfix": true,
+	"get-netipaddress": true, "get-netipinterface": true, "get-netroute": true,
+	"get-partition": true, "get-physicaldisk": true,
+	"get-timezone": true, "get-variable": true,
+	// Read-only pipeline/formatting cmdlets
+	"measure-object": true, "sort-object": true, "group-object": true,
+	"convertto-json": true, "convertfrom-json": true,
+	"out-string": true, "out-null": true,
+	"where-object": true, "foreach-object": true,
+	"format-wide": true, "tee-object": true,
+	"select-string": true, "compare-object": true,
+	"convertto-csv": true, "convertfrom-csv": true,
+	"convertto-xml": true, "convertto-html": true,
+	"confirm-securebootefi": true,
+	"resolve-dnsname": true,
+	"test-netconnection": true,
 }
 
 // psCmdletsDangerous lists PowerShell cmdlets that mutate state and must not
@@ -368,12 +403,25 @@ var psCmdletsSafe = map[string]bool{
 // a safe cmdlet (e.g. "Get-Process | Stop-Process -Force").  Checked in
 // lowercase for case-insensitive matching.
 var psCmdletsDangerous = map[string]bool{
-	"stop-process":       true,
-	"remove-item":        true,
-	"stop-service":       true,
-	"restart-service":    true,
-	"clear-content":      true,
+	"stop-process":        true,
+	"remove-item":         true,
+	"stop-service":        true,
+	"restart-service":     true,
+	"clear-content":       true,
 	"set-executionpolicy": true,
+	"new-item":            true,
+	"new-service":         true,
+	"new-object":          true,
+	"start-process":       true,
+	"start-service":       true,
+	"invoke-expression":   true,
+	"invoke-command":      true,
+	"invoke-webrequest":   true,
+	"invoke-restmethod":   true,
+	"set-content":         true,
+	"set-itemproperty":    true,
+	"add-content":         true,
+	"add-type":            true,
 }
 
 // hasDangerousPSCmdlet reports whether any token in fields matches a
@@ -532,6 +580,7 @@ var devToolCmds = map[string]bool{
 	"python.exe": true, "node": true, "ruby": true, "perl": true, "php": true,
 	"java": true, "lua": true, "Rscript": true, "swift": true, "julia": true,
 	"deno": true, "bun": true, "ts-node": true, "npx": true, "uvx": true, "py": true,
+	"pytest": true, "py.test": true,
 }
 
 // pythonCmds is the subset of devToolCmds that are Python interpreters.

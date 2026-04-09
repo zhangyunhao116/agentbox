@@ -401,7 +401,7 @@ func TestIsCommandSeparator(t *testing.T) {
 
 func TestPipeShellsContent(t *testing.T) {
 	// Verify the canonical list contains expected interpreters.
-	expected := []string{"sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby", "node"}
+	expected := []string{"sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python3", "perl", "ruby", "node"}
 	if len(pipeShells) != len(expected) {
 		t.Fatalf("pipeShells has %d elements, want %d", len(pipeShells), len(expected))
 	}

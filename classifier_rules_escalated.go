@@ -851,8 +851,8 @@ func gitWriteRule() rule {
 }
 
 // sshCommandRule escalates SSH remote access commands.
-// Only the exact base command "ssh" is matched; related utilities like
-// ssh-keygen, ssh-agent, ssh-add, and sshpass are not escalated.
+// Only the exact base commands "ssh" and "sshpass" are matched; related
+// utilities like ssh-keygen, ssh-agent, and ssh-add are not escalated.
 func sshCommandRule() rule {
 	return rule{
 		Name: "ssh-command",
@@ -861,7 +861,15 @@ func sshCommandRule() rule {
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if baseCommand(fields[0]) == "ssh" {
+			base := baseCommand(fields[0])
+			if base == "sshpass" {
+				return ClassifyResult{
+					Decision: Escalated,
+					Reason:   "sshpass wraps SSH remote access; requires approval",
+					Rule:     "ssh-command",
+				}, true
+			}
+			if base == "ssh" {
 				// ssh -V (uppercase) is a version check — safe, not a connection.
 				if isSSHVersionOnly(stripFieldsRedirectsAndPipes(fields[1:])) {
 					return ClassifyResult{}, false
@@ -875,7 +883,15 @@ func sshCommandRule() rule {
 			return ClassifyResult{}, false
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
-			if baseCommand(name) == "ssh" {
+			base := baseCommand(name)
+			if base == "sshpass" {
+				return ClassifyResult{
+					Decision: Escalated,
+					Reason:   "sshpass wraps SSH remote access; requires approval",
+					Rule:     "ssh-command",
+				}, true
+			}
+			if base == "ssh" {
 				if isSSHVersionOnly(args) {
 					return ClassifyResult{}, false
 				}

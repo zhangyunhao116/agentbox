@@ -621,7 +621,7 @@ func TestClassifierDevToolRun(t *testing.T) {
 		{"swift script", "swift script.swift", Allow},
 		{"julia script", "julia main.jl", Allow},
 		// Negative: compound command should not match Allow.
-		{"compound python", "python3 script.py && rm -rf /", Sandboxed},
+		{"compound python", "python3 script.py && rm -rf /", Forbidden}, // compound chain catches rm -rf /
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -722,7 +722,7 @@ func TestClassifierBuildTool(t *testing.T) {
 		// cargo install is escalated by the package-install rule.
 		{"cargo install", "cargo install ripgrep", Escalated},
 		// Negative: compound command.
-		{"compound make", "make && rm -rf /", Sandboxed},
+		{"compound make", "make && rm -rf /", Forbidden}, // compound chain catches rm -rf /
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -824,7 +824,7 @@ func TestClassifierFileManagement(t *testing.T) {
 		// rm is NOT in file-management (too dangerous).
 		{"rm file", "rm file.txt", Sandboxed},
 		// Compound command.
-		{"compound mkdir", "mkdir dir && rm -rf /", Sandboxed},
+		{"compound mkdir", "mkdir dir && rm -rf /", Forbidden}, // compound chain catches rm -rf /
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1000,7 +1000,7 @@ func TestClassifierArchiveTool(t *testing.T) {
 		{"7z list", "7z l archive.7z", Allow},
 		{"7z test", "7z t archive.7z", Allow},
 		// Compound command.
-		{"compound tar", "tar xzf a.tgz && rm -rf /", Sandboxed},
+		{"compound tar", "tar xzf a.tgz && rm -rf /", Forbidden},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1098,7 +1098,7 @@ func TestClassifierOpenCommand(t *testing.T) {
 		{"start url", "start https://example.com", Allow},
 		{"wslview", "wslview https://example.com", Allow},
 		// Compound command.
-		{"compound open", "open url && rm -rf /", Sandboxed},
+		{"compound open", "open url && rm -rf /", Forbidden}, // compound chain catches rm -rf /
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

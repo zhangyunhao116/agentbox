@@ -1980,7 +1980,7 @@ func TestClassifierNetworkScanInfoFlags(t *testing.T) {
 		// rule, so they return Allow.
 		{"tshark --version", "tshark --version", Allow},
 		{"nmap --version", "nmap --version", Allow},
-		{"nmap --version 2>&1 | head -3", "/usr/bin/nmap --version 2>&1 | head -3", Sandboxed},
+		{"nmap --version 2>&1 | head -3", "/usr/bin/nmap --version 2>&1 | head -3", Allow},
 		{"nmap --version 2>&1", "/usr/local/bin/nmap --version 2>&1", Allow},
 		{"nmap --help", "nmap --help", Allow},
 		{"tshark -h", "tshark -h", Allow},
@@ -2039,10 +2039,10 @@ func TestClassifierFirewallManagementPipesAndHelp(t *testing.T) {
 		{"iptables -L -n | head -50", "iptables -L -n | head -50", Sandboxed},
 		{"iptables -L INPUT --line-numbers 2>&1 | head -30", "iptables -L INPUT -n --line-numbers 2>&1 | head -30", Sandboxed},
 		{"iptables -L FORWARD --line-numbers 2>&1 | head -30", "iptables -L FORWARD -n --line-numbers 2>&1 | head -30", Sandboxed},
-		// Help flags — should NOT be escalated.
-		{"iptables --help 2>&1 | head -5", "iptables --help 2>&1 | head -5", Sandboxed},
-		{"ufw --help 2>&1 | head -5", "ufw --help 2>&1 | head -5", Sandboxed},
-		{"firewall-cmd --help 2>&1 | head -5", "firewall-cmd --help 2>&1 | head -5", Sandboxed},
+		// Help flags — normalisation strips pipes/redirects; version-check rule matches.
+		{"iptables --help 2>&1 | head -5", "iptables --help 2>&1 | head -5", Allow},
+		{"ufw --help 2>&1 | head -5", "ufw --help 2>&1 | head -5", Allow},
+		{"firewall-cmd --help 2>&1 | head -5", "firewall-cmd --help 2>&1 | head -5", Allow},
 		// Write operations — still escalated.
 		{"iptables -A INPUT -j DROP", "iptables -A INPUT -j DROP", Escalated},
 		{"ufw allow 22/tcp", "ufw allow 22/tcp", Escalated},
@@ -2303,7 +2303,7 @@ func TestClassifierBackgroundProcess(t *testing.T) {
 		{"tmux new-session", "tmux new-session -d -s work", Escalated},
 		{"tmux new", "tmux new -s work", Escalated},
 		// Negative: && is not background.
-		{"not background &&", "ls && echo done", Sandboxed},
+		{"not background &&", "ls && echo done", Allow}, // compound chain: both segments allow
 		// tmux list is not session creation.
 		{"tmux ls", "tmux ls", Sandboxed},
 		{"tmux list-sessions", "tmux list-sessions", Sandboxed},
