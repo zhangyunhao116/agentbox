@@ -68,7 +68,7 @@ func applyReadOnlyBindMounts(cfg *platform.WrapConfig) error {
 // (not exact matches) of any writable root. Exact matches are handled
 // by the Landlock DenyWrite set logic directly.
 func denyWriteSubpaths(denyWrite, writableRoots []string) []string {
-	seen := make(map[string]bool)
+	seen := make(map[string]struct{})
 	var result []string
 	for _, dw := range denyWrite {
 		cdw := filepath.Clean(dw)
@@ -87,8 +87,8 @@ func denyWriteSubpaths(denyWrite, writableRoots []string) []string {
 				isSubpath = cdw != cwr && strings.HasPrefix(cdw, cwr+string(filepath.Separator))
 			}
 			if isSubpath {
-				if !seen[cdw] {
-					seen[cdw] = true
+				if _, ok := seen[cdw]; !ok {
+					seen[cdw] = struct{}{}
 					result = append(result, cdw)
 				}
 				break

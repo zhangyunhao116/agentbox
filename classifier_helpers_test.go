@@ -1,6 +1,7 @@
 package agentbox
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -537,5 +538,185 @@ func TestIsPythonLauncher(t *testing.T) {
 				t.Errorf("isPythonLauncher(%q) = %v, want %v", tt.base, got, tt.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// classifyCtx tests
+// ---------------------------------------------------------------------------
+
+func TestAcquireCtx(t *testing.T) {
+	tests := []struct {
+		cmd        string
+		wantLower  string
+		wantFields []string
+		wantBase   string
+	}{
+		{
+			cmd:        "ls -la",
+			wantLower:  "ls -la",
+			wantFields: []string{"ls", "-la"},
+			wantBase:   "ls",
+		},
+		{
+			cmd:        "/usr/bin/Git status",
+			wantLower:  "/usr/bin/git status",
+			wantFields: []string{"/usr/bin/Git", "status"},
+			wantBase:   "Git",
+		},
+		{
+			cmd:        "",
+			wantLower:  "",
+			wantFields: []string{},
+			wantBase:   "",
+		},
+		{
+			cmd:        "python.exe  -m pip  install",
+			wantLower:  "python.exe  -m pip  install",
+			wantFields: []string{"python.exe", "-m", "pip", "install"},
+			wantBase:   "python",
+		},
+		{
+			cmd:        "  ECHO   Hello  ",
+			wantLower:  "  echo   hello  ",
+			wantFields: []string{"ECHO", "Hello"},
+			wantBase:   "ECHO",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			ctx := acquireCtx(tt.cmd)
+			defer releaseCtx(ctx)
+
+			if ctx.cmd != tt.cmd {
+				t.Errorf("ctx.cmd = %q, want %q", ctx.cmd, tt.cmd)
+			}
+			if ctx.Lower() != tt.wantLower {
+				t.Errorf("ctx.Lower() = %q, want %q", ctx.Lower(), tt.wantLower)
+			}
+			if len(ctx.Fields()) != len(tt.wantFields) {
+				t.Fatalf("ctx.Fields() = %v (len %d), want %v (len %d)", ctx.Fields(), len(ctx.Fields()), tt.wantFields, len(tt.wantFields))
+			}
+			for i, f := range ctx.Fields() {
+				if f != tt.wantFields[i] {
+					t.Errorf("ctx.fields[%d] = %q, want %q", i, f, tt.wantFields[i])
+				}
+			}
+			if ctx.Base() != tt.wantBase {
+				t.Errorf("ctx.Base() = %q, want %q", ctx.Base(), tt.wantBase)
+			}
+		})
+	}
+}
+
+func TestReleaseCtx(t *testing.T) {
+	ctx := acquireCtx("git push origin main")
+	if ctx.cmd == "" {
+		t.Fatal("expected non-empty cmd after acquire")
+	}
+	releaseCtx(ctx)
+
+	// After release, re-acquire should get a zeroed (then re-initialized) ctx.
+	ctx2 := acquireCtx("ls")
+	defer releaseCtx(ctx2)
+	if ctx2.cmd != "ls" {
+		t.Errorf("re-acquired ctx.cmd = %q, want %q", ctx2.cmd, "ls")
+	}
+	if ctx2.Base() != "ls" {
+		t.Errorf("re-acquired ctx.Base() = %q, want %q", ctx2.Base(), "ls")
+	}
+}
+
+func TestAcquireCtxBaseConsistency(t *testing.T) {
+	// Verify ctx.Base() matches baseCommand(fields[0]) for various inputs.
+	commands := []string{
+		"ls -la",
+		"/usr/bin/python3 script.py",
+		"C:\\Windows\\System32\\cmd.exe /c dir",
+		"./script.sh arg1 arg2",
+		"pip.exe install requests",
+	}
+	for _, cmd := range commands {
+		ctx := acquireCtx(cmd)
+		fields := strings.Fields(cmd)
+		want := ""
+		if len(fields) > 0 {
+			want = baseCommand(fields[0])
+		}
+		if ctx.Base() != want {
+			t.Errorf("acquireCtx(%q).Base() = %q, want baseCommand(%q) = %q", cmd, ctx.Base(), fields[0], want)
+		}
+		releaseCtx(ctx)
+	}
+}
+
+// TestClassifyCtxConcurrency verifies acquireCtx/releaseCtx is safe under
+// concurrent use (the sync.Pool backing is goroutine-safe by design, but
+// this test ensures no data races or corruption).
+func TestClassifyCtxConcurrency(t *testing.T) {
+	done := make(chan struct{})
+	for i := 0; i < 100; i++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			for j := 0; j < 100; j++ {
+				ctx := acquireCtx("git status")
+				if ctx.Base() != "git" {
+					t.Errorf("concurrent ctx.Base() = %q, want %q", ctx.Base(), "git")
+				}
+				if ctx.Lower() != "git status" {
+					t.Errorf("concurrent ctx.Lower() = %q, want %q", ctx.Lower(), "git status")
+				}
+				releaseCtx(ctx)
+			}
+		}()
+	}
+	for i := 0; i < 100; i++ {
+		<-done
+	}
+}
+
+// TestMatchCtxFallback verifies that classifyOnce correctly falls back to Match
+// when MatchCtx is nil, and uses MatchCtx when present.
+func TestMatchCtxFallback(t *testing.T) {
+	// Rule with only Match (no MatchCtx).
+	matchOnly := rule{
+		Name: "match-only",
+		Match: func(command string) (ClassifyResult, bool) {
+			if command == "forbidden-cmd" {
+				return ClassifyResult{Decision: Forbidden, Reason: "test", Rule: "match-only"}, true
+			}
+			return ClassifyResult{}, false
+		},
+	}
+
+	// Rule with only MatchCtx (no Match).
+	ctxOnly := rule{
+		Name: "ctx-only",
+		MatchCtx: func(ctx *classifyCtx) (ClassifyResult, bool) {
+			if ctx.Base() == "ctx-cmd" {
+				return ClassifyResult{Decision: Allow, Reason: "test", Rule: "ctx-only"}, true
+			}
+			return ClassifyResult{}, false
+		},
+	}
+
+	c := &ruleClassifier{rules: []rule{matchOnly, ctxOnly}}
+
+	// Should use Match fallback.
+	r := c.classifyOnce("forbidden-cmd")
+	if r.Decision != Forbidden || r.Rule != "match-only" {
+		t.Errorf("expected Forbidden from match-only rule, got %v", r)
+	}
+
+	// Should use MatchCtx.
+	r = c.classifyOnce("ctx-cmd arg1")
+	if r.Decision != Allow || r.Rule != "ctx-only" {
+		t.Errorf("expected Allow from ctx-only rule, got %v", r)
+	}
+
+	// Neither matches — should get Sandboxed.
+	r = c.classifyOnce("unknown-cmd")
+	if r.Decision != Sandboxed {
+		t.Errorf("expected Sandboxed for unknown command, got %v", r)
 	}
 }

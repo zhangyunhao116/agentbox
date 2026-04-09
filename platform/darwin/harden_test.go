@@ -105,10 +105,10 @@ func TestSanitizeEnvRemovesLD(t *testing.T) {
 	}
 
 	// Should keep non-LD vars.
-	expected := map[string]bool{
-		"PATH=/usr/bin":    true,
-		"HOME=/Users/test": true,
-		"SHELL=/bin/zsh":   true,
+	expected := map[string]struct{}{
+		"PATH=/usr/bin":    {},
+		"HOME=/Users/test": {},
+		"SHELL=/bin/zsh":   {},
 	}
 	for _, e := range got {
 		delete(expected, e)
@@ -139,9 +139,9 @@ func TestSanitizeEnvRemovesDYLD(t *testing.T) {
 	}
 
 	// Should keep non-DYLD vars.
-	expected := map[string]bool{
-		"PATH=/usr/bin":    true,
-		"HOME=/Users/test": true,
+	expected := map[string]struct{}{
+		"PATH=/usr/bin":    {},
+		"HOME=/Users/test": {},
 	}
 	for _, e := range got {
 		delete(expected, e)

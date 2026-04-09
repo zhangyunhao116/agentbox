@@ -59,6 +59,7 @@ func TestMatchesDomain_WildcardDoesNotMatchBareDomain(t *testing.T) {
 }
 
 func TestMatchesDomain_CaseInsensitive(t *testing.T) {
+	// Patterns are pre-normalized to lowercase when stored in DomainFilter.
 	tests := []struct {
 		hostname string
 		pattern  string
@@ -66,8 +67,8 @@ func TestMatchesDomain_CaseInsensitive(t *testing.T) {
 	}{
 		{"Example.COM", "example.com", true},
 		{"SUB.Example.COM", "*.example.com", true},
-		{"example.com", "EXAMPLE.COM", true},
-		{"sub.example.com", "*.EXAMPLE.COM", true},
+		{"example.com", "example.com", true},
+		{"sub.example.com", "*.example.com", true},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%s_%s", tt.hostname, tt.pattern), func(t *testing.T) {
@@ -79,15 +80,15 @@ func TestMatchesDomain_CaseInsensitive(t *testing.T) {
 }
 
 func TestMatchesDomain_TrailingDot(t *testing.T) {
-	// FQDN trailing dots should be handled.
+	// Patterns are pre-normalized (trailing dots removed) when stored in DomainFilter.
 	tests := []struct {
 		hostname string
 		pattern  string
 		want     bool
 	}{
 		{"example.com.", "example.com", true},
-		{"example.com", "example.com.", true},
-		{"sub.example.com.", "*.example.com.", true},
+		{"example.com", "example.com", true},
+		{"sub.example.com.", "*.example.com", true},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%s_%s", tt.hostname, tt.pattern), func(t *testing.T) {

@@ -78,6 +78,12 @@ type rule struct {
 	// ClassifyResult and true if the rule matches, or a zero value and false
 	// otherwise.
 	MatchArgs func(name string, args []string) (ClassifyResult, bool)
+
+	// MatchCtx is an optional alternative to Match that receives precomputed
+	// command fields (lower, fields, base). When non-nil, classifyOnce calls
+	// MatchCtx instead of Match, avoiding redundant strings.Fields /
+	// strings.ToLower / baseCommand calls across rules.
+	MatchCtx func(ctx *classifyCtx) (ClassifyResult, bool)
 }
 
 // ruleClassifier implements Classifier by evaluating an ordered list of Rules.
@@ -87,9 +93,17 @@ type ruleClassifier struct {
 
 // classifyOnce runs all rules against a single command string and returns
 // the first match. If no rule matches it returns Sandboxed.
+// When a rule provides MatchCtx, it is called with a precomputed classifyCtx
+// (fields, lower, base) to avoid redundant string operations.
 func (c *ruleClassifier) classifyOnce(command string) ClassifyResult {
+	ctx := acquireCtx(command)
+	defer releaseCtx(ctx)
 	for _, r := range c.rules {
-		if r.Match != nil {
+		if r.MatchCtx != nil {
+			if result, ok := r.MatchCtx(ctx); ok {
+				return result
+			}
+		} else if r.Match != nil {
 			if result, ok := r.Match(command); ok {
 				return result
 			}
@@ -234,16 +248,30 @@ func (c *ruleClassifier) classifyCompoundChain(command string) ClassifyResult {
 }
 
 // classifyArgsOnce runs all rules against a parsed command (name + args) and
-// falls back to Match with the reconstructed command string. Returns the first
-// match or Sandboxed.
+// falls back to MatchCtx (or Match) with the reconstructed command string.
+// Returns the first match or Sandboxed.
 func (c *ruleClassifier) classifyArgsOnce(name string, args []string, command string) ClassifyResult {
+	// Lazily-initialized: only created when a rule has MatchCtx but no MatchArgs.
+	var ctx *classifyCtx
+	defer func() {
+		if ctx != nil {
+			releaseCtx(ctx)
+		}
+	}()
 	for _, r := range c.rules {
 		if r.MatchArgs != nil {
 			if result, ok := r.MatchArgs(name, args); ok {
 				return result
 			}
 		}
-		if r.Match != nil {
+		if r.MatchCtx != nil {
+			if ctx == nil {
+				ctx = acquireCtx(command)
+			}
+			if result, ok := r.MatchCtx(ctx); ok {
+				return result
+			}
+		} else if r.Match != nil {
 			if result, ok := r.Match(command); ok {
 				return result
 			}

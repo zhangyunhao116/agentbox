@@ -170,9 +170,9 @@ func applyLandlock(cfg *platform.WrapConfig) error {
 	readAccess := uint64(accessFSExecute | accessFSReadFile | accessFSReadDir)
 
 	// Build a set of DenyRead paths to exclude from readable ruleset.
-	denyReadSet := make(map[string]bool, len(cfg.DenyRead))
+	denyReadSet := make(map[string]struct{}, len(cfg.DenyRead))
 	for _, p := range cfg.DenyRead {
-		denyReadSet[filepath.Clean(p)] = true
+		denyReadSet[filepath.Clean(p)] = struct{}{}
 	}
 
 	// Create the ruleset.
@@ -188,12 +188,12 @@ func applyLandlock(cfg *platform.WrapConfig) error {
 	defer func() { _ = closePathFn(int(rulesetFd)) }()
 
 	// Add rules for writable roots (skip paths in DenyWrite).
-	denyWriteSet := make(map[string]bool, len(cfg.DenyWrite))
+	denyWriteSet := make(map[string]struct{}, len(cfg.DenyWrite))
 	for _, p := range cfg.DenyWrite {
-		denyWriteSet[filepath.Clean(p)] = true
+		denyWriteSet[filepath.Clean(p)] = struct{}{}
 	}
 	for _, path := range cfg.WritableRoots {
-		if denyWriteSet[filepath.Clean(path)] {
+		if _, ok := denyWriteSet[filepath.Clean(path)]; ok {
 			// Add as read-only instead of writable.
 			if err := landlockAddPathRule(int(rulesetFd), path, readAccess); err != nil {
 				return fmt.Errorf("landlock add read-only rule for denied-write %q: %w", path, err)
@@ -209,7 +209,7 @@ func applyLandlock(cfg *platform.WrapConfig) error {
 	// Use granular paths for /etc, /proc, and /dev rather than exposing
 	// everything under those directories.
 	for _, path := range systemReadPaths {
-		if denyReadSet[path] {
+		if _, ok := denyReadSet[path]; ok {
 			continue
 		}
 		if _, err := statPathFn(path); err == nil {

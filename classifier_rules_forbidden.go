@@ -6,6 +6,29 @@ package agentbox
 
 import "strings"
 
+// shutdownPowerCmds is the set of commands that shut down or reboot the system.
+var shutdownPowerCmds = map[string]struct{}{
+	"shutdown": {}, "reboot": {}, "halt": {}, "poweroff": {},
+}
+
+// kernelModuleCmds matches commands that manipulate kernel modules.
+var kernelModuleCmds = map[string]struct{}{
+	"insmod": {}, "rmmod": {}, "modprobe": {}, "depmod": {},
+}
+
+// partitionCmds matches commands that manage disk partitions.
+var partitionCmds = map[string]struct{}{
+	"gdisk": {}, "cfdisk": {}, "sfdisk": {},
+}
+
+// shellInterpreterCmds are shell interpreters for history execution detection.
+var shellInterpreterCmds = map[string]struct{}{
+	"sh": {}, "bash": {}, "zsh": {}, "dash": {}, "ksh": {},
+}
+
+// windowsRmdirCmds are Windows rmdir/rd commands for recursive delete detection.
+var windowsRmdirCmds = map[string]struct{}{"rmdir": {}, "rd": {}}
+
 func forkBombRule() rule {
 	forkBombMatch := func(command string) (ClassifyResult, bool) {
 		// Classic fork bomb patterns with various spacing.
@@ -1165,12 +1188,6 @@ func matchIFSBypass(command string) (ClassifyResult, bool) {
 
 // shutdownRebootRule matches commands that shut down or reboot the system.
 func shutdownRebootRule() rule {
-	powerCmds := map[string]bool{
-		"shutdown": true,
-		"reboot":   true,
-		"halt":     true,
-		"poweroff": true,
-	}
 	return rule{
 		Name: "shutdown-reboot",
 		Match: func(command string) (ClassifyResult, bool) {
@@ -1179,7 +1196,7 @@ func shutdownRebootRule() rule {
 				return ClassifyResult{}, false
 			}
 			cmd := baseCommand(fields[0])
-			if powerCmds[cmd] {
+			if _, ok := shutdownPowerCmds[cmd]; ok {
 				// Windows "shutdown /a" aborts a pending shutdown — safe.
 				if cmd == "shutdown" && containsShutdownAbort(fields[1:]) {
 					return ClassifyResult{}, false
@@ -1202,7 +1219,7 @@ func shutdownRebootRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			cmd := baseCommand(name)
-			if powerCmds[cmd] {
+			if _, ok := shutdownPowerCmds[cmd]; ok {
 				// Windows "shutdown /a" aborts a pending shutdown — safe.
 				if cmd == "shutdown" && containsShutdownAbort(args) {
 					return ClassifyResult{}, false
@@ -1261,9 +1278,6 @@ func isModprobeReadOnly(args []string) bool {
 // kernelModuleRule matches commands that manipulate kernel modules.
 // Read-only modprobe queries (--show-*, --dump-*, --dry-run, -n) are exempt.
 func kernelModuleRule() rule {
-	kmodCmds := map[string]bool{
-		"insmod": true, "rmmod": true, "modprobe": true, "depmod": true,
-	}
 	return rule{
 		Name: "kernel-module",
 		Match: func(command string) (ClassifyResult, bool) {
@@ -1272,7 +1286,7 @@ func kernelModuleRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if !kmodCmds[base] {
+			if _, ok := kernelModuleCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			// Help/version queries are safe.
@@ -1291,7 +1305,7 @@ func kernelModuleRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !kmodCmds[base] {
+			if _, ok := kernelModuleCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if hasHelpOrVersionFlag(args) || hasVersionOnlyFlag(args) {
@@ -1313,9 +1327,6 @@ func kernelModuleRule() rule {
 // fdisk and parted are handled by filesystemFormatRule (which already exempts
 // their -l/--list read-only modes), so they are not duplicated here.
 func partitionManagementRule() rule {
-	partCmds := map[string]bool{
-		"gdisk": true, "cfdisk": true, "sfdisk": true,
-	}
 	return rule{
 		Name: "partition-management",
 		Match: func(command string) (ClassifyResult, bool) {
@@ -1323,7 +1334,7 @@ func partitionManagementRule() rule {
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if partCmds[baseCommand(fields[0])] {
+			if _, ok := partitionCmds[baseCommand(fields[0])]; ok {
 				// Help/version queries are safe.
 				if hasHelpOrVersionFlag(fields[1:]) || hasVersionOnlyFlag(fields[1:]) {
 					return ClassifyResult{}, false
@@ -1337,7 +1348,7 @@ func partitionManagementRule() rule {
 			return ClassifyResult{}, false
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
-			if partCmds[baseCommand(name)] {
+			if _, ok := partitionCmds[baseCommand(name)]; ok {
 				// Help/version queries are safe.
 				if hasHelpOrVersionFlag(args) || hasVersionOnlyFlag(args) {
 					return ClassifyResult{}, false
@@ -1356,9 +1367,6 @@ func partitionManagementRule() rule {
 // historyExecRule matches commands that re-execute shell history, such as
 // "history | sh", "history | bash", "fc -s", and "fc -e".
 func historyExecRule() rule {
-	shellInterpreters := map[string]bool{
-		"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true,
-	}
 	return rule{
 		Name: "history-exec",
 		Match: func(command string) (ClassifyResult, bool) {
@@ -1374,12 +1382,14 @@ func historyExecRule() rule {
 				for _, p := range parts[1:] {
 					trimmed := strings.TrimSpace(p)
 					pfields := strings.Fields(trimmed)
-					if len(pfields) > 0 && shellInterpreters[baseCommand(pfields[0])] {
-						return ClassifyResult{
-							Decision: Forbidden,
-							Reason:   "history re-execution is forbidden",
-							Rule:     "history-exec",
-						}, true
+					if len(pfields) > 0 {
+						if _, ok := shellInterpreterCmds[baseCommand(pfields[0])]; ok {
+							return ClassifyResult{
+								Decision: Forbidden,
+								Reason:   "history re-execution is forbidden",
+								Rule:     "history-exec",
+							}, true
+						}
 					}
 				}
 			}
@@ -1598,15 +1608,15 @@ func outputRedirectSystemRule() rule {
 // safeDevTargets lists exact /dev/ paths that are safe redirection targets.
 // Redirecting to these devices (e.g. 2>/dev/null) is normal shell usage and
 // should not be flagged by output-redirect-system.
-var safeDevTargets = map[string]bool{
-	"/dev/null":    true,
-	"/dev/zero":    true,
-	"/dev/stdout":  true,
-	"/dev/stderr":  true,
-	"/dev/stdin":   true,
-	"/dev/tty":     true,
-	"/dev/random":  true,
-	"/dev/urandom": true,
+var safeDevTargets = map[string]struct{}{
+	"/dev/null":    {},
+	"/dev/zero":    {},
+	"/dev/stdout":  {},
+	"/dev/stderr":  {},
+	"/dev/stdin":   {},
+	"/dev/tty":     {},
+	"/dev/random":  {},
+	"/dev/urandom": {},
 }
 
 // safeDevPrefixes lists /dev/ subdirectory prefixes that are safe redirection
@@ -1625,7 +1635,7 @@ func isSafeDevTarget(target string) bool {
 	if strings.Contains(target, "..") {
 		return false
 	}
-	if safeDevTargets[target] {
+	if _, ok := safeDevTargets[target]; ok {
 		return true
 	}
 	for _, prefix := range safeDevPrefixes {
@@ -1663,9 +1673,9 @@ func hasVersionOnlyFlag(args []string) bool {
 // xargsNoValFlags are xargs flags that take no argument value.
 //
 // Boolean flags: -0, -t, -p, -r, --no-run-if-empty, --verbose, --null, -x, --exit
-var xargsNoValFlags = map[string]bool{
-	"-0": true, "-t": true, "-p": true, "-r": true, "-x": true,
-	"--no-run-if-empty": true, "--verbose": true, "--null": true, "--exit": true,
+var xargsNoValFlags = map[string]struct{}{
+	"-0": {}, "-t": {}, "-p": {}, "-r": {}, "-x": {},
+	"--no-run-if-empty": {}, "--verbose": {}, "--null": {}, "--exit": {},
 }
 
 // xargsValFlags are xargs flags that consume the next argument as a value.
@@ -1674,12 +1684,12 @@ var xargsNoValFlags = map[string]bool{
 //
 //	-I, -J, -L, -n, -P, -R, -S, -s, -d, -E, -a
 //	--arg-file, --delimiter, --max-args, --max-procs, --max-lines, --replace
-var xargsValFlags = map[string]bool{
-	"-I": true, "-J": true, "-L": true, "-n": true, "-P": true,
-	"-R": true, "-S": true, "-s": true, "-d": true, "-E": true,
-	"-a": true,
-	"--arg-file": true, "--delimiter": true, "--max-args": true,
-	"--max-procs": true, "--max-lines": true, "--replace": true,
+var xargsValFlags = map[string]struct{}{
+	"-I": {}, "-J": {}, "-L": {}, "-n": {}, "-P": {},
+	"-R": {}, "-S": {}, "-s": {}, "-d": {}, "-E": {},
+	"-a": {},
+	"--arg-file": {}, "--delimiter": {}, "--max-args": {},
+	"--max-procs": {}, "--max-lines": {}, "--replace": {},
 }
 
 // shellWrapperUnwrapRule detects shell wrapper commands (sh -c, bash -c,
@@ -1725,8 +1735,8 @@ func classifyWithRules(command string, rules []rule) (ClassifyResult, bool) {
 
 // unixShellWrappers are Unix shell commands that accept -c to run an inline
 // command string.
-var unixShellWrappers = map[string]bool{
-	"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true,
+var unixShellWrappers = map[string]struct{}{
+	"sh": {}, "bash": {}, "zsh": {}, "dash": {}, "ksh": {},
 }
 
 // windowsShellWrappers maps Windows shell commands to their "execute"
@@ -1736,9 +1746,9 @@ var windowsShellWrappers = map[string]string{
 }
 
 // psWrappers are PowerShell executable names.
-var psWrappers = map[string]bool{
-	"powershell": true, "powershell.exe": true,
-	"pwsh": true, "pwsh.exe": true,
+var psWrappers = map[string]struct{}{
+	"powershell": {}, "powershell.exe": {},
+	"pwsh": {}, "pwsh.exe": {},
 }
 
 // extractShellWrapperInner extracts the inner command from a shell wrapper
@@ -1760,7 +1770,7 @@ func extractShellWrapperInner(command string) (string, bool) {
 	base := strings.ToLower(baseCommand(fields[idx]))
 
 	// Unix: sh -c "...", bash -c "..."
-	if unixShellWrappers[base] {
+	if _, ok := unixShellWrappers[base]; ok {
 		if idx+2 < len(fields) && fields[idx+1] == "-c" {
 			inner := strings.Join(fields[idx+2:], " ")
 			return stripOuterQuotes(inner), true
@@ -1789,7 +1799,7 @@ func extractShellWrapperInner(command string) (string, bool) {
 	}
 
 	// PowerShell: powershell -Command "...", powershell -c "..."
-	if psWrappers[base] {
+	if _, ok := psWrappers[base]; ok {
 		for j := idx + 1; j < len(fields)-1; j++ {
 			lower := strings.ToLower(fields[j])
 			if lower == "-command" || lower == "-c" {
@@ -1858,14 +1868,12 @@ func stripOuterQuotes(s string) string {
 // commands: rmdir /s /q and rd /s /q targeting dangerous paths.
 func windowsRecursiveDeleteRule() rule {
 	const ruleName = "windows-recursive-delete"
-	rmdirCmds := map[string]bool{"rmdir": true, "rd": true}
-
 	matchInner := func(fields []string) (ClassifyResult, bool) {
 		if len(fields) < 2 {
 			return ClassifyResult{}, false
 		}
 		cmd := strings.ToLower(baseCommand(fields[0]))
-		if !rmdirCmds[cmd] {
+		if _, ok := windowsRmdirCmds[cmd]; !ok {
 			return ClassifyResult{}, false
 		}
 		// Check for /s flag (recursive) — case-insensitive.
@@ -2140,10 +2148,10 @@ func powershellDestructiveRule() rule {
 func xargsTargetCommand(args []string) string {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		if xargsNoValFlags[a] {
+		if _, ok := xargsNoValFlags[a]; ok {
 			continue
 		}
-		if xargsValFlags[a] {
+		if _, ok := xargsValFlags[a]; ok {
 			i++ // skip the value
 			continue
 		}
@@ -2154,7 +2162,7 @@ func xargsTargetCommand(args []string) string {
 		// Handle short flags with attached values (e.g., -I{}, -n1, -d,).
 		if len(a) > 2 && a[0] == '-' && a[1] != '-' {
 			short := a[:2]
-			if xargsValFlags[short] {
+			if _, ok := xargsValFlags[short]; ok {
 				continue // value is attached
 			}
 		}

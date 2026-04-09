@@ -122,3 +122,24 @@ func BenchmarkClassifyArgs_DockerBuild(b *testing.B) {
 		c.ClassifyArgs("docker", []string{"build", "-t", "myimage", "."})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Normalization and compound chain benchmarks
+// ---------------------------------------------------------------------------
+
+func BenchmarkNormalizeForClassification(b *testing.B) {
+	cmd := "cd /path/to/project && go build ./... 2>&1 | head -20"
+	b.ResetTimer()
+	for b.Loop() {
+		normalizeForClassification(cmd)
+	}
+}
+
+func BenchmarkClassify_CompoundChain(b *testing.B) {
+	c := DefaultClassifier()
+	cmd := "cd /path && go build ./... && go test ./..."
+	b.ResetTimer()
+	for b.Loop() {
+		c.Classify(cmd)
+	}
+}

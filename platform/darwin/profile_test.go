@@ -313,10 +313,10 @@ func TestSanitizeEnv(t *testing.T) {
 	}
 
 	// Should keep non-DYLD vars.
-	expected := map[string]bool{
-		"PATH=/usr/bin":    true,
-		"HOME=/Users/test": true,
-		"SHELL=/bin/zsh":   true,
+	expected := map[string]struct{}{
+		"PATH=/usr/bin":    {},
+		"HOME=/Users/test": {},
+		"SHELL=/bin/zsh":   {},
 	}
 	for _, e := range got {
 		delete(expected, e)
@@ -355,34 +355,34 @@ func TestSanitizeEnvOnlyDYLD(t *testing.T) {
 
 func TestProxyEnvVarsHTTP(t *testing.T) {
 	vars := proxyEnvVars(8080, 0)
-	found := make(map[string]bool)
+	found := make(map[string]struct{})
 	for _, v := range vars {
-		found[v] = true
+		found[v] = struct{}{}
 	}
-	if !found["HTTP_PROXY=http://127.0.0.1:8080"] {
+	if _, ok := found["HTTP_PROXY=http://127.0.0.1:8080"]; !ok {
 		t.Error("missing HTTP_PROXY")
 	}
-	if !found["http_proxy=http://127.0.0.1:8080"] {
+	if _, ok := found["http_proxy=http://127.0.0.1:8080"]; !ok {
 		t.Error("missing http_proxy")
 	}
-	if !found["HTTPS_PROXY=http://127.0.0.1:8080"] {
+	if _, ok := found["HTTPS_PROXY=http://127.0.0.1:8080"]; !ok {
 		t.Error("missing HTTPS_PROXY")
 	}
-	if !found["https_proxy=http://127.0.0.1:8080"] {
+	if _, ok := found["https_proxy=http://127.0.0.1:8080"]; !ok {
 		t.Error("missing https_proxy")
 	}
 }
 
 func TestProxyEnvVarsSOCKS(t *testing.T) {
 	vars := proxyEnvVars(0, 1080)
-	found := make(map[string]bool)
+	found := make(map[string]struct{})
 	for _, v := range vars {
-		found[v] = true
+		found[v] = struct{}{}
 	}
-	if !found["ALL_PROXY=socks5h://127.0.0.1:1080"] {
+	if _, ok := found["ALL_PROXY=socks5h://127.0.0.1:1080"]; !ok {
 		t.Error("missing ALL_PROXY")
 	}
-	if !found["all_proxy=socks5h://127.0.0.1:1080"] {
+	if _, ok := found["all_proxy=socks5h://127.0.0.1:1080"]; !ok {
 		t.Error("missing all_proxy")
 	}
 }
@@ -411,14 +411,14 @@ func TestGetTmpdirParents(t *testing.T) {
 		t.Fatal("getTmpdirParents() returned empty")
 	}
 
-	found := make(map[string]bool)
+	found := make(map[string]struct{})
 	for _, d := range dirs {
-		found[d] = true
+		found[d] = struct{}{}
 	}
-	if !found["/private/tmp"] {
+	if _, ok := found["/private/tmp"]; !ok {
 		t.Error("missing /private/tmp")
 	}
-	if !found["/private/var/folders"] {
+	if _, ok := found["/private/var/folders"]; !ok {
 		t.Error("missing /private/var/folders")
 	}
 }

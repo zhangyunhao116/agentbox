@@ -9,6 +9,174 @@ import (
 	"strings"
 )
 
+// userManagementCmds lists commands that manage system users and groups.
+var userManagementCmds = map[string]struct{}{
+	"useradd": {}, "userdel": {}, "usermod": {},
+	"groupadd": {}, "groupdel": {}, "groupmod": {},
+	"passwd": {}, "chpasswd": {},
+	"adduser": {}, "deluser": {},
+	"addgroup": {}, "delgroup": {},
+}
+
+// dockerContainerSubs lists Docker/Podman container subcommands that need escalation.
+var dockerContainerSubs = map[string]struct{}{
+	"run": {}, "exec": {}, "stop": {}, "rm": {},
+	"restart": {}, "kill": {}, "pause": {}, "unpause": {},
+}
+
+// dockerContainerObjActions lists docker <object> <destructive-action> patterns.
+var dockerContainerObjActions = map[string]map[string]struct{}{
+	"system":    {"prune": {}},
+	"volume":    {"rm": {}, "prune": {}},
+	"image":     {"rm": {}, "prune": {}},
+	"container": {"rm": {}, "prune": {}},
+}
+
+// dockerComposeSubs lists docker-compose subcommands that need escalation.
+var dockerComposeSubs = map[string]struct{}{
+	"up": {}, "down": {}, "restart": {},
+	"rm": {}, "stop": {}, "kill": {},
+}
+
+// kubernetesSubs lists kubectl subcommands that modify cluster state.
+var kubernetesSubs = map[string]struct{}{
+	"exec": {}, "run": {}, "delete": {}, "apply": {},
+	"create": {}, "edit": {}, "patch": {}, "scale": {},
+	"rollout": {},
+}
+
+// processKillCmds lists process termination commands.
+var processKillCmds = map[string]struct{}{
+	"kill":         {},
+	"pkill":        {},
+	"killall":      {},
+	"taskkill":     {},
+	"Stop-Process": {},
+	"stop-process": {}, // Windows/PowerShell commands are case-insensitive.
+}
+
+// gitWriteSubs lists git subcommands that are remote/destructive operations.
+var gitWriteSubs = map[string]struct{}{
+	"push":   {},
+	"pull":   {},
+	"clone":  {},
+	"fetch":  {},
+	"reset":  {},
+	"rebase": {},
+	"merge":  {},
+}
+
+// fileTransferCmds lists file transfer commands.
+var fileTransferCmds = map[string]struct{}{
+	"scp":   {},
+	"rsync": {},
+	"sftp":  {},
+	"ftp":   {},
+}
+
+// curlDownloadFlags lists curl flags that indicate file download.
+var curlDownloadFlags = map[string]struct{}{
+	"-o":       {},
+	"-O":       {},
+	"--output": {},
+}
+
+// serviceDirectCmds lists direct service management commands.
+var serviceDirectCmds = map[string]struct{}{
+	"systemctl": {},
+	"service":   {},
+	"launchctl": {},
+}
+
+// serviceSystemctlReadOnly lists read-only systemctl subcommands.
+var serviceSystemctlReadOnly = map[string]struct{}{
+	"status":            {},
+	"is-active":         {},
+	"is-enabled":        {},
+	"is-failed":         {},
+	"show":              {},
+	"list-units":        {},
+	"list-unit-files":   {},
+	"list-timers":       {},
+	"list-sockets":      {},
+	"list-dependencies": {},
+	"cat":               {},
+}
+
+// serviceLaunchctlReadOnly lists read-only launchctl subcommands.
+var serviceLaunchctlReadOnly = map[string]struct{}{
+	"list":  {},
+	"print": {},
+}
+
+// serviceScSubs lists Windows sc subcommands that indicate service management (write ops).
+var serviceScSubs = map[string]struct{}{
+	"start":  {},
+	"stop":   {},
+	"create": {},
+	"delete": {},
+	"config": {},
+}
+
+// crontabScheduleCmds lists scheduled task management commands.
+var crontabScheduleCmds = map[string]struct{}{
+	"crontab": {},
+	"at":      {},
+	"atq":     {},
+	"atrm":    {},
+}
+
+// filePermissionCmds lists file permission change commands.
+var filePermissionCmds = map[string]struct{}{
+	"chmod": {}, "chown": {}, "chgrp": {},
+}
+
+// firewallManagementCmds lists firewall management commands.
+var firewallManagementCmds = map[string]struct{}{
+	"iptables": {}, "ip6tables": {}, "ufw": {},
+	"nft": {}, "firewall-cmd": {},
+}
+
+// networkScanCmds lists network scanning and packet capture tools.
+var networkScanCmds = map[string]struct{}{
+	"nmap": {}, "tcpdump": {}, "tshark": {},
+	"wireshark": {}, "ettercap": {}, "masscan": {},
+}
+
+// databaseClientCmds lists interactive database client commands.
+var databaseClientCmds = map[string]struct{}{
+	"mysql": {}, "psql": {}, "sqlite3": {},
+	cmdRedisCLI: {}, "mongo": {}, "mongosh": {},
+}
+
+// databaseBackupCmds lists database backup and restore commands.
+var databaseBackupCmds = map[string]struct{}{
+	"pg_dump": {}, "pg_restore": {}, "mysqldump": {},
+	"mongodump": {}, "mongorestore": {},
+	"mongoexport": {}, "mongoimport": {},
+}
+
+// gitStashDestructiveSubs lists destructive git stash subcommands.
+var gitStashDestructiveSubs = map[string]struct{}{
+	"drop":  {},
+	"clear": {},
+}
+
+// evalExecCmds lists commands that execute code from arguments or files.
+var evalExecCmds = map[string]struct{}{"eval": {}, "source": {}}
+
+// dockerBuildSubs lists Docker/Podman image lifecycle subcommands.
+var dockerBuildSubs = map[string]struct{}{
+	"build": {},
+	"push":  {},
+	"pull":  {},
+}
+
+// containerEscapeCmds lists commands that can manipulate namespaces or chroot.
+var containerEscapeCmds = map[string]struct{}{
+	"nsenter": {}, "chroot": {}, "unshare": {},
+}
+
 // isShellRedirect reports whether tok looks like a shell redirect token
 // (e.g. "2>/dev/null", "2>&1", ">/dev/null", "&>/dev/null", "&>", "1>&2").
 func isShellRedirect(tok string) bool {
@@ -74,12 +242,11 @@ func stripFieldsRedirectsAndPipes(fields []string) []string {
 func sudoRule() rule {
 	return rule{
 		Name: ruleSudo,
-		Match: func(command string) (ClassifyResult, bool) {
-			fields := strings.Fields(command)
-			if len(fields) == 0 {
+		MatchCtx: func(ctx *classifyCtx) (ClassifyResult, bool) {
+			if len(ctx.Fields()) == 0 {
 				return ClassifyResult{}, false
 			}
-			cmd := baseCommand(fields[0])
+			cmd := ctx.Base()
 			if cmd == ruleSudo || cmd == cmdDoas {
 				return ClassifyResult{
 					Decision: Escalated,
@@ -109,12 +276,11 @@ func sudoRule() rule {
 func suPrivilegeRule() rule {
 	return rule{
 		Name: "su-privilege",
-		Match: func(command string) (ClassifyResult, bool) {
-			fields := strings.Fields(command)
-			if len(fields) == 0 {
+		MatchCtx: func(ctx *classifyCtx) (ClassifyResult, bool) {
+			if len(ctx.Fields()) == 0 {
 				return ClassifyResult{}, false
 			}
-			cmd := baseCommand(fields[0])
+			cmd := ctx.Base()
 			if cmd != "su" {
 				return ClassifyResult{}, false
 			}
@@ -188,9 +354,9 @@ var credentialSensitiveExtensions = []string{
 }
 
 // credentialReaders lists commands that read file contents.
-var credentialReaders = map[string]bool{
-	"cat": true, "head": true, "tail": true,
-	"less": true, "more": true, "type": true,
+var credentialReaders = map[string]struct{}{
+	"cat": {}, "head": {}, "tail": {},
+	"less": {}, "more": {}, "type": {},
 }
 
 // isCredentialSensitivePath reports whether the argument looks like a
@@ -251,7 +417,7 @@ func isEnvExampleFile(base string) bool {
 }
 
 // envEnumCmds lists commands that print environment variables.
-var envEnumCmds = map[string]bool{cmdEnv: true, "printenv": true}
+var envEnumCmds = map[string]struct{}{cmdEnv: {}, "printenv": {}}
 
 // credGrepPatterns are substrings that indicate credential enumeration
 // when used as a grep argument after env/printenv.
@@ -271,7 +437,10 @@ func isEnvCredentialEnum(command string) bool {
 		return false
 	}
 	firstFields := strings.Fields(strings.TrimSpace(parts[0]))
-	if len(firstFields) == 0 || !envEnumCmds[baseCommand(firstFields[0])] {
+	if len(firstFields) == 0 {
+		return false
+	}
+	if _, ok := envEnumCmds[baseCommand(firstFields[0])]; !ok {
 		return false
 	}
 	for _, p := range parts[1:] {
@@ -295,9 +464,9 @@ func isEnvCredentialEnum(command string) bool {
 func credentialAccessRule() rule {
 	return rule{
 		Name: "credential-access",
-		Match: func(command string) (ClassifyResult, bool) {
+		MatchCtx: func(ctx *classifyCtx) (ClassifyResult, bool) {
 			// Check for env/printenv piped to grep for credential patterns.
-			if isEnvCredentialEnum(command) {
+			if isEnvCredentialEnum(ctx.cmd) {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "environment credential enumeration requires approval",
@@ -306,15 +475,14 @@ func credentialAccessRule() rule {
 			}
 
 			// Check for file-based credential access (cat ~/.ssh/id_rsa, etc.).
-			fields := strings.Fields(command)
-			if len(fields) < 2 {
+			if len(ctx.Fields()) < 2 {
 				return ClassifyResult{}, false
 			}
-			cmd := baseCommand(fields[0])
-			if !credentialReaders[cmd] {
+			cmd := ctx.Base()
+			if _, ok := credentialReaders[cmd]; !ok {
 				return ClassifyResult{}, false
 			}
-			for _, f := range fields[1:] {
+			for _, f := range ctx.Fields()[1:] {
 				if strings.HasPrefix(f, "-") {
 					continue // skip flags
 				}
@@ -330,7 +498,7 @@ func credentialAccessRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			cmd := baseCommand(name)
-			if !credentialReaders[cmd] {
+			if _, ok := credentialReaders[cmd]; !ok {
 				return ClassifyResult{}, false
 			}
 			for _, a := range args {
@@ -352,25 +520,17 @@ func credentialAccessRule() rule {
 
 // userManagementRule matches commands that manage system users and groups.
 func userManagementRule() rule {
-	userCmds := map[string]bool{
-		"useradd": true, "userdel": true, "usermod": true,
-		"groupadd": true, "groupdel": true, "groupmod": true,
-		"passwd": true, "chpasswd": true,
-		"adduser": true, "deluser": true,
-		"addgroup": true, "delgroup": true,
-	}
 	return rule{
 		Name: "user-management",
-		Match: func(command string) (ClassifyResult, bool) {
-			fields := strings.Fields(command)
-			if len(fields) == 0 {
+		MatchCtx: func(ctx *classifyCtx) (ClassifyResult, bool) {
+			if len(ctx.Fields()) == 0 {
 				return ClassifyResult{}, false
 			}
-			base := baseCommand(fields[0])
-			if !userCmds[base] {
+			base := ctx.Base()
+			if _, ok := userManagementCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
-			cleaned := stripFieldsRedirectsAndPipes(fields[1:])
+			cleaned := stripFieldsRedirectsAndPipes(ctx.Fields()[1:])
 			// --help, -h, --version are informational only.
 			if escalatedHasInfoFlag(cleaned) {
 				return ClassifyResult{}, false
@@ -387,7 +547,7 @@ func userManagementRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !userCmds[base] {
+			if _, ok := userManagementCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if escalatedHasInfoFlag(args) {
@@ -493,19 +653,6 @@ func globalInstallRule() rule {
 // run, exec, stop, rm, restart, kill, pause, unpause, and object-level
 // destructive actions (system prune, volume rm, image rm, container rm, etc.).
 func dockerContainerRule() rule {
-	// Subcommands for docker/podman that need escalation.
-	dockerSubs := map[string]bool{
-		"run": true, "exec": true, "stop": true, "rm": true,
-		"restart": true, "kill": true, "pause": true, "unpause": true,
-	}
-	// docker <object> <destructive-action> patterns.
-	dockerObjActions := map[string]map[string]bool{
-		"system":    {"prune": true},
-		"volume":    {"rm": true, "prune": true},
-		"image":     {"rm": true, "prune": true},
-		"container": {"rm": true, "prune": true},
-	}
-
 	const reason = "container runtime operation requires approval"
 	const ruleName = "docker-container"
 
@@ -526,8 +673,8 @@ func dockerContainerRule() rule {
 				return ClassifyResult{}, false
 			}
 			// docker <object> <action>
-			if actions, ok := dockerObjActions[sub]; ok && len(fields) >= 3 {
-				if actions[fields[2]] {
+			if actions, ok := dockerContainerObjActions[sub]; ok && len(fields) >= 3 {
+				if _, ok := actions[fields[2]]; ok {
 					return ClassifyResult{
 						Decision: Escalated,
 						Reason:   reason,
@@ -537,7 +684,7 @@ func dockerContainerRule() rule {
 				return ClassifyResult{}, false
 			}
 			// docker <subcmd>
-			if dockerSubs[sub] {
+			if _, ok := dockerContainerSubs[sub]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   reason,
@@ -564,11 +711,6 @@ func dockerContainerRule() rule {
 
 // dockerComposeRule escalates docker-compose / docker compose commands.
 func dockerComposeRule() rule {
-	composeSubs := map[string]bool{
-		"up": true, "down": true, "restart": true,
-		"rm": true, "stop": true, "kill": true,
-	}
-
 	const reason = "docker compose operation requires approval"
 	const ruleName = "docker-compose"
 
@@ -587,7 +729,7 @@ func dockerComposeRule() rule {
 			if fields[1] != "compose" {
 				return ClassifyResult{}, false
 			}
-			if composeSubs[fields[2]] {
+			if _, ok := dockerComposeSubs[fields[2]]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   reason,
@@ -599,7 +741,7 @@ func dockerComposeRule() rule {
 			if len(fields) < 2 {
 				return ClassifyResult{}, false
 			}
-			if composeSubs[fields[1]] {
+			if _, ok := dockerComposeSubs[fields[1]]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   reason,
@@ -626,12 +768,6 @@ func dockerComposeRule() rule {
 
 // kubernetesRule escalates kubectl operations that modify cluster state.
 func kubernetesRule() rule {
-	kubectlSubs := map[string]bool{
-		"exec": true, "run": true, "delete": true, "apply": true,
-		"create": true, "edit": true, "patch": true, "scale": true,
-		"rollout": true,
-	}
-
 	const reason = "kubernetes operation requires approval"
 	const ruleName = "kubernetes"
 
@@ -645,7 +781,7 @@ func kubernetesRule() rule {
 			if len(fields) < 2 {
 				return ClassifyResult{}, false
 			}
-			if kubectlSubs[fields[1]] {
+			if _, ok := kubernetesSubs[fields[1]]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   reason,
@@ -738,28 +874,18 @@ func systemPackageInstallRule() rule {
 // processKillRule escalates process termination commands.
 // Matches kill, pkill, killall (Unix), taskkill (Windows), Stop-Process (PowerShell).
 func processKillRule() rule {
-	killCmds := map[string]bool{
-		"kill":         true,
-		"pkill":        true,
-		"killall":      true,
-		"taskkill":     true,
-		"Stop-Process": true,
-		"stop-process": true, // Windows/PowerShell commands are case-insensitive.
-	}
-
 	return rule{
 		Name: "process-kill",
-		Match: func(command string) (ClassifyResult, bool) {
-			fields := strings.Fields(command)
-			if len(fields) == 0 {
+		MatchCtx: func(ctx *classifyCtx) (ClassifyResult, bool) {
+			if len(ctx.Fields()) == 0 {
 				return ClassifyResult{}, false
 			}
-			base := baseCommand(fields[0])
-			if !killCmds[base] {
+			base := ctx.Base()
+			if _, ok := processKillCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			// "kill -l" / "kill --list" lists signal names — read-only.
-			if base == "kill" && isKillListOnly(fields[1:]) {
+			if base == "kill" && isKillListOnly(ctx.Fields()[1:]) {
 				return ClassifyResult{}, false
 			}
 			return ClassifyResult{
@@ -770,7 +896,7 @@ func processKillRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !killCmds[base] {
+			if _, ok := processKillCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if base == "kill" && isKillListOnly(args) {
@@ -803,28 +929,17 @@ func isKillListOnly(args []string) bool {
 // Local-only ops (add, commit, stash, checkout, etc.) are left to the sandbox.
 // It scans past git flags (arguments starting with "-") to find the subcommand.
 func gitWriteRule() rule {
-	writeSubs := map[string]bool{
-		"push":   true,
-		"pull":   true,
-		"clone":  true,
-		"fetch":  true,
-		"reset":  true,
-		"rebase": true,
-		"merge":  true,
-	}
-
 	return rule{
 		Name: "git-write",
-		Match: func(command string) (ClassifyResult, bool) {
-			fields := strings.Fields(command)
-			if len(fields) < 2 {
+		MatchCtx: func(ctx *classifyCtx) (ClassifyResult, bool) {
+			if len(ctx.Fields()) < 2 {
 				return ClassifyResult{}, false
 			}
-			if baseCommand(fields[0]) != cmdGit {
+			if ctx.Base() != cmdGit {
 				return ClassifyResult{}, false
 			}
-			sub := findGitSubcommand(fields[1:])
-			if writeSubs[sub] {
+			sub := findGitSubcommand(ctx.Fields()[1:])
+			if _, ok := gitWriteSubs[sub]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "git remote/destructive operation requires approval",
@@ -838,7 +953,7 @@ func gitWriteRule() rule {
 				return ClassifyResult{}, false
 			}
 			sub := findGitSubcommand(args)
-			if writeSubs[sub] {
+			if _, ok := gitWriteSubs[sub]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "git remote/destructive operation requires approval",
@@ -856,12 +971,11 @@ func gitWriteRule() rule {
 func sshCommandRule() rule {
 	return rule{
 		Name: "ssh-command",
-		Match: func(command string) (ClassifyResult, bool) {
-			fields := strings.Fields(command)
-			if len(fields) == 0 {
+		MatchCtx: func(ctx *classifyCtx) (ClassifyResult, bool) {
+			if len(ctx.Fields()) == 0 {
 				return ClassifyResult{}, false
 			}
-			base := baseCommand(fields[0])
+			base := ctx.Base()
 			if base == "sshpass" {
 				return ClassifyResult{
 					Decision: Escalated,
@@ -871,7 +985,7 @@ func sshCommandRule() rule {
 			}
 			if base == "ssh" {
 				// ssh -V (uppercase) is a version check — safe, not a connection.
-				if isSSHVersionOnly(stripFieldsRedirectsAndPipes(fields[1:])) {
+				if isSSHVersionOnly(stripFieldsRedirectsAndPipes(ctx.Fields()[1:])) {
 					return ClassifyResult{}, false
 				}
 				return ClassifyResult{
@@ -920,13 +1034,6 @@ func isSSHVersionOnly(args []string) bool {
 
 // fileTransferRule escalates file transfer commands: scp, rsync, sftp, ftp.
 func fileTransferRule() rule {
-	transferCmds := map[string]bool{
-		"scp":   true,
-		"rsync": true,
-		"sftp":  true,
-		"ftp":   true,
-	}
-
 	return rule{
 		Name: "file-transfer",
 		Match: func(command string) (ClassifyResult, bool) {
@@ -934,7 +1041,7 @@ func fileTransferRule() rule {
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if transferCmds[baseCommand(fields[0])] {
+			if _, ok := fileTransferCmds[baseCommand(fields[0])]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "file transfer requires approval",
@@ -944,7 +1051,7 @@ func fileTransferRule() rule {
 			return ClassifyResult{}, false
 		},
 		MatchArgs: func(name string, _ []string) (ClassifyResult, bool) {
-			if transferCmds[baseCommand(name)] {
+			if _, ok := fileTransferCmds[baseCommand(name)]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "file transfer requires approval",
@@ -960,12 +1067,6 @@ func fileTransferRule() rule {
 // download flags (-o, -O, --output). Plain curl without download flags is
 // allowed (used for API calls).
 func downloadToFileRule() rule {
-	curlDownloadFlags := map[string]bool{
-		"-o":       true,
-		"-O":       true,
-		"--output": true,
-	}
-
 	const reason = "file download requires approval"
 	const ruleName = "download-to-file"
 
@@ -981,7 +1082,7 @@ func downloadToFileRule() rule {
 			if isCommandSeparator(a) {
 				return false
 			}
-			if curlDownloadFlags[a] {
+			if _, ok := curlDownloadFlags[a]; ok {
 				return true
 			}
 			// Check for -o/O combined with other short flags (e.g. -Lo, -sOL).
@@ -1035,44 +1136,6 @@ func downloadToFileRule() rule {
 // serviceManagementRule escalates service management commands: systemctl,
 // service, launchctl, and sc/sc.exe (Windows, only with recognized subcommands).
 func serviceManagementRule() rule {
-	// Direct service management commands.
-	directCmds := map[string]bool{
-		"systemctl": true,
-		"service":   true,
-		"launchctl": true,
-	}
-
-	// Read-only systemctl subcommands that should not be escalated.
-	systemctlReadOnly := map[string]bool{
-		"status":            true,
-		"is-active":         true,
-		"is-enabled":        true,
-		"is-failed":         true,
-		"show":              true,
-		"list-units":        true,
-		"list-unit-files":   true,
-		"list-timers":       true,
-		"list-sockets":      true,
-		"list-dependencies": true,
-		"cat":               true,
-	}
-
-	// Read-only launchctl subcommands.
-	launchctlReadOnly := map[string]bool{
-		"list":  true,
-		"print": true,
-	}
-
-	// Windows sc subcommands that indicate service management (write ops).
-	// "query" is excluded — it is read-only.
-	scSubs := map[string]bool{
-		"start":  true,
-		"stop":   true,
-		"create": true,
-		"delete": true,
-		"config": true,
-	}
-
 	const reason = "service management requires approval"
 	const ruleName = "service-management"
 
@@ -1082,13 +1145,17 @@ func serviceManagementRule() rule {
 		}
 		base := baseCommand(fields[0])
 		args := fields[1:]
-		if directCmds[base] {
+		if _, ok := serviceDirectCmds[base]; ok {
 			sub := serviceFirstSubcommand(args)
-			if base == "systemctl" && systemctlReadOnly[sub] {
-				return ClassifyResult{}, false
+			if base == "systemctl" {
+				if _, ok := serviceSystemctlReadOnly[sub]; ok {
+					return ClassifyResult{}, false
+				}
 			}
-			if base == "launchctl" && launchctlReadOnly[sub] {
-				return ClassifyResult{}, false
+			if base == "launchctl" {
+				if _, ok := serviceLaunchctlReadOnly[sub]; ok {
+					return ClassifyResult{}, false
+				}
 			}
 			// "service <name> status" is read-only.
 			if base == "service" && isServiceStatusCmd(args) {
@@ -1102,7 +1169,7 @@ func serviceManagementRule() rule {
 		}
 		// Windows sc.exe or sc with service subcommand.
 		if (base == "sc" || base == "sc.exe") && len(args) >= 1 {
-			if scSubs[strings.ToLower(args[0])] {
+			if _, ok := serviceScSubs[strings.ToLower(args[0])]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   reason,
@@ -1150,13 +1217,6 @@ func isServiceStatusCmd(args []string) bool {
 
 // crontabAtRule escalates scheduled task management commands: crontab, at, atq, atrm.
 func crontabAtRule() rule {
-	scheduleCmds := map[string]bool{
-		"crontab": true,
-		"at":      true,
-		"atq":     true,
-		"atrm":    true,
-	}
-
 	return rule{
 		Name: "crontab-at",
 		Match: func(command string) (ClassifyResult, bool) {
@@ -1165,7 +1225,7 @@ func crontabAtRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if !scheduleCmds[base] {
+			if _, ok := crontabScheduleCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			// crontab -l is read-only (list crontab); skip escalation.
@@ -1187,7 +1247,7 @@ func crontabAtRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !scheduleCmds[base] {
+			if _, ok := crontabScheduleCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if base == "crontab" && isCrontabListOnly(args) {
@@ -1255,9 +1315,6 @@ func isAtCatOnly(args []string) bool {
 // Since forbidden rules run first and take priority,
 // this escalated rule only fires for non-root-recursive usages.
 func filePermissionRule() rule {
-	permCmds := map[string]bool{
-		"chmod": true, "chown": true, "chgrp": true,
-	}
 	return rule{
 		Name: "file-permission",
 		Match: func(command string) (ClassifyResult, bool) {
@@ -1265,7 +1322,7 @@ func filePermissionRule() rule {
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if permCmds[baseCommand(fields[0])] {
+			if _, ok := filePermissionCmds[baseCommand(fields[0])]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "file permission change requires approval",
@@ -1275,7 +1332,7 @@ func filePermissionRule() rule {
 			return ClassifyResult{}, false
 		},
 		MatchArgs: func(name string, _ []string) (ClassifyResult, bool) {
-			if permCmds[baseCommand(name)] {
+			if _, ok := filePermissionCmds[baseCommand(name)]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "file permission change requires approval",
@@ -1291,10 +1348,6 @@ func filePermissionRule() rule {
 // ip6tables, ufw, nft, and firewall-cmd. Read-only flags (-L, --list, etc.)
 // are exempted.
 func firewallManagementRule() rule {
-	fwCmds := map[string]bool{
-		"iptables": true, "ip6tables": true, "ufw": true,
-		"nft": true, "firewall-cmd": true,
-	}
 	return rule{
 		Name: "firewall-management",
 		Match: func(command string) (ClassifyResult, bool) {
@@ -1303,7 +1356,7 @@ func firewallManagementRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if !fwCmds[base] {
+			if _, ok := firewallManagementCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			// Strip redirects and pipes so read-only detection is not
@@ -1323,7 +1376,7 @@ func firewallManagementRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !fwCmds[base] {
+			if _, ok := firewallManagementCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if escalatedHasInfoFlag(args) {
@@ -1343,12 +1396,12 @@ func firewallManagementRule() rule {
 
 // iptablesListOnlyFlags are the flags that constitute a read-only iptables
 // invocation. A command is list-only if every flag is in this set.
-var iptablesListOnlyFlags = map[string]bool{
-	"-L": true, flagList: true,
-	"-S": true, "--list-rules": true,
-	"-n": true, "--numeric": true,
-	"-v": true, "--verbose": true,
-	"--line-numbers": true,
+var iptablesListOnlyFlags = map[string]struct{}{
+	"-L": {}, flagList: {},
+	"-S": {}, "--list-rules": {},
+	"-n": {}, "--numeric": {},
+	"-v": {}, "--verbose": {},
+	"--line-numbers": {},
 }
 
 // isFirewallReadOnly reports whether the given firewall command arguments
@@ -1394,7 +1447,7 @@ func isIptablesListOnly(args []string) bool {
 		if strings.HasPrefix(a, "--table=") {
 			continue
 		}
-		if iptablesListOnlyFlags[a] {
+		if _, ok := iptablesListOnlyFlags[a]; ok {
 			if a == "-L" || a == flagList || a == "-S" || a == "--list-rules" {
 				hasListFlag = true
 			}
@@ -1411,11 +1464,11 @@ func isIptablesListOnly(args []string) bool {
 }
 
 // firewallCmdReadOnlyFlags are firewall-cmd flags that indicate read-only queries.
-var firewallCmdReadOnlyFlags = map[string]bool{
-	"--list-all":         true,
-	"--list-all-zones":   true,
-	"--state":            true,
-	"--get-active-zones": true,
+var firewallCmdReadOnlyFlags = map[string]struct{}{
+	"--list-all":         {},
+	"--list-all-zones":   {},
+	"--state":            {},
+	"--get-active-zones": {},
 }
 
 // isFirewallCmdReadOnly reports whether the firewall-cmd arguments
@@ -1424,7 +1477,7 @@ var firewallCmdReadOnlyFlags = map[string]bool{
 func isFirewallCmdReadOnly(args []string) bool {
 	hasReadOnlyFlag := false
 	for _, a := range args {
-		if firewallCmdReadOnlyFlags[a] {
+		if _, ok := firewallCmdReadOnlyFlags[a]; ok {
 			hasReadOnlyFlag = true
 			continue
 		}
@@ -1440,10 +1493,6 @@ func isFirewallCmdReadOnly(args []string) bool {
 // networkScanRule escalates network scanning and packet capture tools:
 // nmap, tcpdump, tshark, wireshark, ettercap, and masscan.
 func networkScanRule() rule {
-	scanCmds := map[string]bool{
-		"nmap": true, "tcpdump": true, "tshark": true,
-		"wireshark": true, "ettercap": true, "masscan": true,
-	}
 	return rule{
 		Name: "network-scan",
 		Match: func(command string) (ClassifyResult, bool) {
@@ -1451,7 +1500,7 @@ func networkScanRule() rule {
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if scanCmds[baseCommand(fields[0])] {
+			if _, ok := networkScanCmds[baseCommand(fields[0])]; ok {
 				// --help, -h, --version, -V are informational only.
 				if escalatedHasInfoFlag(stripFieldsRedirectsAndPipes(fields[1:])) {
 					return ClassifyResult{}, false
@@ -1465,7 +1514,7 @@ func networkScanRule() rule {
 			return ClassifyResult{}, false
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
-			if scanCmds[baseCommand(name)] {
+			if _, ok := networkScanCmds[baseCommand(name)]; ok {
 				if escalatedHasInfoFlag(args) {
 					return ClassifyResult{}, false
 				}
@@ -1484,11 +1533,6 @@ func networkScanRule() rule {
 // psql, sqlite3, redis-cli, mongo, and mongosh. Commands with --help or
 // --version are exempted. Note: -h is NOT exempted because psql uses -h for host.
 func databaseClientRule() rule {
-	// Interactive database client commands only.
-	dbCmds := map[string]bool{
-		"mysql": true, "psql": true, "sqlite3": true,
-		cmdRedisCLI: true, "mongo": true, "mongosh": true,
-	}
 	return rule{
 		Name: "database-client",
 		Match: func(command string) (ClassifyResult, bool) {
@@ -1497,7 +1541,7 @@ func databaseClientRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if !dbCmds[base] {
+			if _, ok := databaseClientCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if isDBClientInfoOnly(base, fields[1:]) {
@@ -1511,7 +1555,7 @@ func databaseClientRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !dbCmds[base] {
+			if _, ok := databaseClientCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if isDBClientInfoOnly(base, args) {
@@ -1528,11 +1572,6 @@ func databaseClientRule() rule {
 
 // databaseBackupRule escalates database backup and restore operations.
 func databaseBackupRule() rule {
-	backupCmds := map[string]bool{
-		"pg_dump": true, "pg_restore": true, "mysqldump": true,
-		"mongodump": true, "mongorestore": true,
-		"mongoexport": true, "mongoimport": true,
-	}
 	return rule{
 		Name: "database-backup",
 		Match: func(command string) (ClassifyResult, bool) {
@@ -1541,7 +1580,7 @@ func databaseBackupRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if !backupCmds[base] {
+			if _, ok := databaseBackupCmds[base]; !ok {
 				// Also check redis-cli SAVE/BGSAVE.
 				if base == cmdRedisCLI {
 					return checkRedisBackup(fields[1:])
@@ -1559,7 +1598,7 @@ func databaseBackupRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !backupCmds[base] {
+			if _, ok := databaseBackupCmds[base]; !ok {
 				if base == cmdRedisCLI {
 					return checkRedisBackup(args)
 				}
@@ -1614,11 +1653,6 @@ func isDBClientInfoOnly(base string, args []string) bool {
 
 // gitStashDropRule escalates git stash drop/clear which destroy stashed work.
 func gitStashDropRule() rule {
-	destructiveStashSubs := map[string]bool{
-		"drop":  true,
-		"clear": true,
-	}
-
 	const reason = "git stash drop/clear destroys stashed work and requires approval"
 	const ruleName = "git-stash-drop"
 
@@ -1641,7 +1675,9 @@ func gitStashDropRule() rule {
 			if strings.HasPrefix(f, "-") {
 				continue
 			}
-			return destructiveStashSubs[f]
+			if _, ok := gitStashDestructiveSubs[f]; ok {
+				return true
+			}
 		}
 		return false
 	}
@@ -1685,9 +1721,6 @@ func gitStashDropRule() rule {
 // evalExecRule escalates shell builtins that execute arbitrary code:
 // eval, source, and the dot (.) command.
 func evalExecRule() rule {
-	// evalCmds lists commands that execute code from arguments or files.
-	evalCmds := map[string]bool{"eval": true, "source": true}
-
 	return rule{
 		Name: "eval-exec",
 		Match: func(command string) (ClassifyResult, bool) {
@@ -1696,7 +1729,7 @@ func evalExecRule() rule {
 				return ClassifyResult{}, false
 			}
 			cmd := baseCommand(fields[0])
-			if evalCmds[cmd] {
+			if _, ok := evalExecCmds[cmd]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "eval/source executes arbitrary code and requires approval",
@@ -1719,7 +1752,7 @@ func evalExecRule() rule {
 			if len(args) == 0 {
 				return ClassifyResult{}, false
 			}
-			if evalCmds[cmd] {
+			if _, ok := evalExecCmds[cmd]; ok {
 				return ClassifyResult{
 					Decision: Escalated,
 					Reason:   "eval/source executes arbitrary code and requires approval",
@@ -1745,12 +1778,6 @@ func evalExecRule() rule {
 func dockerBuildRule() rule {
 	const ruleName = "docker-build"
 
-	buildSubs := map[string]bool{
-		"build": true,
-		"push":  true,
-		"pull":  true,
-	}
-
 	matchFields := func(fields []string) (ClassifyResult, bool) {
 		if len(fields) < 2 {
 			return ClassifyResult{}, false
@@ -1760,7 +1787,7 @@ func dockerBuildRule() rule {
 			return ClassifyResult{}, false
 		}
 		sub := fields[1]
-		if buildSubs[sub] {
+		if _, ok := dockerBuildSubs[sub]; ok {
 			return ClassifyResult{
 				Decision: Escalated,
 				Reason:   base + " " + sub + " requires approval",
@@ -1787,17 +1814,17 @@ func dockerBuildRule() rule {
 // packageInstallCmds maps base command names to their install subcommands for
 // local package installation detection. Global installs are handled by the
 // higher-priority global-install rule.
-var packageInstallCmds = map[string]map[string]bool{
-	"pip":      {"install": true, "uninstall": true},
-	"pip3":     {"install": true, "uninstall": true},
-	"npm":      {"install": true, "i": true, "add": true, "ci": true},
-	"yarn":     {"install": true, "add": true},
-	"pnpm":     {"install": true, "add": true, "i": true},
-	"cargo":    {"install": true},
-	"go":       {"install": true},
-	"gem":      {"install": true},
-	"composer": {"install": true, "require": true},
-	"conda":    {"install": true},
+var packageInstallCmds = map[string]map[string]struct{}{
+	"pip":      {"install": {}, "uninstall": {}},
+	"pip3":     {"install": {}, "uninstall": {}},
+	"npm":      {"install": {}, "i": {}, "add": {}, "ci": {}},
+	"yarn":     {"install": {}, "add": {}},
+	"pnpm":     {"install": {}, "add": {}, "i": {}},
+	"cargo":    {"install": {}},
+	"go":       {"install": {}},
+	"gem":      {"install": {}},
+	"composer": {"install": {}, "require": {}},
+	"conda":    {"install": {}},
 }
 
 // isPythonLauncher reports whether base is a Python interpreter name:
@@ -1879,7 +1906,7 @@ func packageInstallRule() rule {
 		if !ok {
 			return ClassifyResult{}, false
 		}
-		if subs[fields[1]] {
+		if _, ok := subs[fields[1]]; ok {
 			return ClassifyResult{
 				Decision: Escalated,
 				Reason:   reason,
@@ -1904,8 +1931,8 @@ func packageInstallRule() rule {
 }
 
 // backgroundProcessCmds is the set of commands that launch background processes.
-var backgroundProcessCmds = map[string]bool{
-	"nohup": true, "disown": true,
+var backgroundProcessCmds = map[string]struct{}{
+	"nohup": {}, "disown": {},
 }
 
 // backgroundProcessRule escalates commands that run processes in the background:
@@ -1933,7 +1960,7 @@ func backgroundProcessRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if backgroundProcessCmds[base] {
+			if _, ok := backgroundProcessCmds[base]; ok {
 				return result, true
 			}
 			for _, a := range args {
@@ -1958,7 +1985,7 @@ func backgroundProcessRule() rule {
 func isBackgroundCommand(fields []string, command string) bool {
 	base := baseCommand(fields[0])
 
-	if backgroundProcessCmds[base] {
+	if _, ok := backgroundProcessCmds[base]; ok {
 		return true
 	}
 	for _, f := range fields[1:] {
@@ -2054,9 +2081,6 @@ func inPlaceEditRule() rule {
 // used for container escapes and privilege boundary changes.
 func containerEscapeRule() rule {
 	const ruleName = "container-escape"
-	cmds := map[string]bool{
-		"nsenter": true, "chroot": true, "unshare": true,
-	}
 	result := ClassifyResult{
 		Decision: Escalated,
 		Reason:   "namespace/chroot manipulation requires approval",
@@ -2070,7 +2094,7 @@ func containerEscapeRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if !cmds[base] {
+			if _, ok := containerEscapeCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if escalatedHasInfoFlag(fields[1:]) {
@@ -2080,7 +2104,7 @@ func containerEscapeRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !cmds[base] {
+			if _, ok := containerEscapeCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if escalatedHasInfoFlag(args) {

@@ -79,9 +79,13 @@ func NewDomainFilter(cfg *FilterConfig) (*DomainFilter, error) {
 	}
 
 	denied := make([]string, len(cfg.DeniedDomains))
-	copy(denied, cfg.DeniedDomains)
+	for i, p := range cfg.DeniedDomains {
+		denied[i] = normalizeDomainPattern(p)
+	}
 	allowed := make([]string, len(cfg.AllowedDomains))
-	copy(allowed, cfg.AllowedDomains)
+	for i, p := range cfg.AllowedDomains {
+		allowed[i] = normalizeDomainPattern(p)
+	}
 
 	return &DomainFilter{
 		denied:  denied,
@@ -157,9 +161,13 @@ func (f *DomainFilter) UpdateRules(denied, allowed []string) error {
 	}
 
 	newDenied := make([]string, len(denied))
-	copy(newDenied, denied)
+	for i, p := range denied {
+		newDenied[i] = normalizeDomainPattern(p)
+	}
 	newAllowed := make([]string, len(allowed))
-	copy(newAllowed, allowed)
+	for i, p := range allowed {
+		newAllowed[i] = normalizeDomainPattern(p)
+	}
 
 	f.mu.Lock()
 	f.denied = newDenied
@@ -169,13 +177,18 @@ func (f *DomainFilter) UpdateRules(denied, allowed []string) error {
 	return nil
 }
 
-// matchesDomain checks if hostname matches a domain pattern.
+// normalizeDomainPattern normalizes a domain pattern for case-insensitive matching.
+// It converts to lowercase and removes trailing dots.
+func normalizeDomainPattern(pattern string) string {
+	return strings.ToLower(strings.TrimSuffix(pattern, "."))
+}
+
+// matchesDomain checks if hostname matches a normalized domain pattern.
 // Supports exact match and wildcard patterns (*.example.com).
 // *.example.com matches sub.example.com but NOT example.com itself.
-// Matching is case-insensitive.
+// Matching is case-insensitive. The pattern must be pre-normalized.
 func matchesDomain(hostname, pattern string) bool {
 	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
-	pattern = strings.ToLower(strings.TrimSuffix(pattern, "."))
 
 	if !strings.HasPrefix(pattern, "*.") {
 		// Exact match.

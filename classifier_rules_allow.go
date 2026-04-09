@@ -10,16 +10,16 @@ import "strings"
 const subRemote = "remote"
 
 // commonSafeCommands is the set of commands considered safe for Allow.
-var commonSafeCommands = map[string]bool{
-	"ls": true, "cat": true, "echo": true, "pwd": true,
-	"whoami": true, "date": true, "head": true, "tail": true,
-	"wc": true, "sort": true, "uniq": true, "grep": true,
-	"which": true, "file": true, "basename": true,
-	"dirname": true, "realpath": true, "stat": true, "du": true,
-	"df": true, "printenv": true, "id": true,
-	"uname": true, "hostname": true, "true": true, "false": true,
-	"test": true, "[": true,
-	"find": true,
+var commonSafeCommands = map[string]struct{}{
+	"ls": {}, "cat": {}, "echo": {}, "pwd": {},
+	"whoami": {}, "date": {}, "head": {}, "tail": {},
+	"wc": {}, "sort": {}, "uniq": {}, "grep": {},
+	"which": {}, "file": {}, "basename": {},
+	"dirname": {}, "realpath": {}, "stat": {}, "du": {},
+	"df": {}, "printenv": {}, "id": {},
+	"uname": {}, "hostname": {}, "true": {}, "false": {},
+	"test": {}, "[": {},
+	"find": {},
 }
 
 // gitReadSubcommands lists git subcommands that are read-only.
@@ -27,24 +27,24 @@ var commonSafeCommands = map[string]bool{
 // and verification, so it is NOT included here.
 // "branch" is handled specially by isGitBranchReadOnly to allow only
 // listing operations, so it is NOT included here (BUG-ALLOW-3).
-var gitReadSubcommands = map[string]bool{
-	"status": true, "log": true, "diff": true, "show": true,
+var gitReadSubcommands = map[string]struct{}{
+	"status": {}, "log": {}, "diff": {}, "show": {},
 }
 
 // gitTagReadOnlyFlags lists flags for "git tag" that are read-only.
-var gitTagReadOnlyFlags = map[string]bool{
-	"-l": true, "--list": true,
-	"-v": true, "--verify": true,
+var gitTagReadOnlyFlags = map[string]struct{}{
+	"-l": {}, "--list": {},
+	"-v": {}, "--verify": {},
 }
 
 // gitTagWriteFlags lists flags for "git tag" that indicate a write operation.
 // Their presence means the command is NOT read-only, even if a read-only flag
 // is also present (e.g. "git tag -l -d v1.0" is a delete, not a list).
-var gitTagWriteFlags = map[string]bool{
-	"-a": true, "--annotate": true,
-	"-d": true, "--delete": true,
-	"-s": true, "--sign": true,
-	"-f": true, "--force": true,
+var gitTagWriteFlags = map[string]struct{}{
+	"-a": {}, "--annotate": {},
+	"-d": {}, "--delete": {},
+	"-s": {}, "--sign": {},
+	"-f": {}, "--force": {},
 }
 
 // isGitTagReadOnly reports whether the remaining args after "git tag"
@@ -62,7 +62,7 @@ func isGitTagReadOnly(argsAfterTag []string) bool {
 	// Reject immediately if any write flag is present — write flags take
 	// precedence even when mixed with read-only flags.
 	for _, a := range argsAfterTag {
-		if gitTagWriteFlags[a] {
+		if _, ok := gitTagWriteFlags[a]; ok {
 			return false
 		}
 	}
@@ -70,7 +70,7 @@ func isGitTagReadOnly(argsAfterTag []string) bool {
 	// it's a lightweight tag creation (e.g. "git tag v1.0").
 	hasReadOnlyFlag := false
 	for _, a := range argsAfterTag {
-		if gitTagReadOnlyFlags[a] {
+		if _, ok := gitTagReadOnlyFlags[a]; ok {
 			hasReadOnlyFlag = true
 		}
 	}
@@ -79,29 +79,29 @@ func isGitTagReadOnly(argsAfterTag []string) bool {
 
 // gitBranchReadOnlyFlags lists flags for "git branch" that indicate a
 // read-only (listing/query) operation.
-var gitBranchReadOnlyFlags = map[string]bool{
-	"-a": true, "--all": true,
-	"-r": true, "--remotes": true,
-	"-v": true, "-vv": true, "--verbose": true,
-	"-l": true, "--list": true,
-	"--show-current": true,
-	"--contains": true, "--no-contains": true,
-	"--merged": true, "--no-merged": true,
-	"--sort": true, "--format": true,
-	"--points-at": true, "--column": true, "--no-column": true,
-	"--color": true, "--no-color": true,
-	"--abbrev": true, "--no-abbrev": true,
+var gitBranchReadOnlyFlags = map[string]struct{}{
+	"-a": {}, "--all": {},
+	"-r": {}, "--remotes": {},
+	"-v": {}, "-vv": {}, "--verbose": {},
+	"-l": {}, "--list": {},
+	"--show-current": {},
+	"--contains": {}, "--no-contains": {},
+	"--merged": {}, "--no-merged": {},
+	"--sort": {}, "--format": {},
+	"--points-at": {}, "--column": {}, "--no-column": {},
+	"--color": {}, "--no-color": {},
+	"--abbrev": {}, "--no-abbrev": {},
 }
 
 // gitBranchWriteFlags lists flags for "git branch" that indicate a write
 // (delete/rename/copy) operation.
-var gitBranchWriteFlags = map[string]bool{
-	"-d": true, "-D": true, "--delete": true,
-	"-m": true, "-M": true, "--move": true,
-	"-c": true, "-C": true, "--copy": true,
-	"--edit-description": true,
-	"--set-upstream-to": true, "-u": true,
-	"--unset-upstream": true,
+var gitBranchWriteFlags = map[string]struct{}{
+	"-d": {}, "-D": {}, "--delete": {},
+	"-m": {}, "-M": {}, "--move": {},
+	"-c": {}, "-C": {}, "--copy": {},
+	"--edit-description": {},
+	"--set-upstream-to": {}, "-u": {},
+	"--unset-upstream": {},
 }
 
 // isGitBranchReadOnly reports whether the remaining args after "git branch"
@@ -117,7 +117,7 @@ func isGitBranchReadOnly(argsAfterBranch []string) bool {
 	}
 	// Reject immediately if any write flag is present.
 	for _, a := range argsAfterBranch {
-		if gitBranchWriteFlags[a] {
+		if _, ok := gitBranchWriteFlags[a]; ok {
 			return false
 		}
 	}
@@ -132,7 +132,7 @@ func isGitBranchReadOnly(argsAfterBranch []string) bool {
 			if idx := strings.IndexByte(a, '='); idx >= 0 {
 				bare = a[:idx]
 			}
-			if gitBranchReadOnlyFlags[bare] {
+			if _, ok := gitBranchReadOnlyFlags[bare]; ok {
 				continue
 			}
 			// Unknown flag: let it fall through to sandboxed to be safe.
@@ -173,14 +173,14 @@ func commonSafeCommandsRule() rule {
 				return ClassifyResult{}, false
 			}
 			cmd := baseCommand(fields[0])
-			if commonSafeCommands[cmd] {
+			if _, ok := commonSafeCommands[cmd]; ok {
 				return result, true
 			}
 			return ClassifyResult{}, false
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			cmd := baseCommand(name)
-			if !commonSafeCommands[cmd] {
+			if _, ok := commonSafeCommands[cmd]; !ok {
 				return ClassifyResult{}, false
 			}
 			// find with action flags (-exec, -delete, etc.) needs
@@ -216,7 +216,7 @@ func gitReadCommandsRule() rule {
 				return ClassifyResult{}, false
 			}
 			sub := findGitSubcommand(fields[1:])
-			if gitReadSubcommands[sub] {
+			if _, ok := gitReadSubcommands[sub]; ok {
 				return result, true
 			}
 			// git tag: only allow read-only operations (list, verify).
@@ -251,7 +251,7 @@ func gitReadCommandsRule() rule {
 				return ClassifyResult{}, false
 			}
 			sub := findGitSubcommand(args)
-			if gitReadSubcommands[sub] {
+			if _, ok := gitReadSubcommands[sub]; ok {
 				return result, true
 			}
 			// git tag: only allow read-only operations (list, verify).
@@ -291,10 +291,10 @@ func argsAfterSubcommand(fields []string, subcmd string) []string {
 }
 
 // gitRemoteWriteSubcmds lists git remote subcommands that modify state.
-var gitRemoteWriteSubcmds = map[string]bool{
-	"add": true, "remove": true, "rm": true,
-	"rename": true, "set-url": true, "set-head": true,
-	"set-branches": true, "prune": true,
+var gitRemoteWriteSubcmds = map[string]struct{}{
+	"add": {}, "remove": {}, "rm": {},
+	"rename": {}, "set-url": {}, "set-head": {},
+	"set-branches": {}, "prune": {},
 }
 
 // gitRemoteHasWriteSubcmd reports whether args contain a git remote write
@@ -307,15 +307,16 @@ func gitRemoteHasWriteSubcmd(args []string) bool {
 		if strings.HasPrefix(a, "-") {
 			continue
 		}
-		return gitRemoteWriteSubcmds[a]
+		_, ok := gitRemoteWriteSubcmds[a]
+		return ok
 	}
 	return false
 }
 
 // versionHelpFlags is the set of flags that indicate a version/help check.
-var versionHelpFlags = map[string]bool{
-	flagVersion: true, "-v": true, "-V": true,
-	flagHelp: true, "-h": true,
+var versionHelpFlags = map[string]struct{}{
+	flagVersion: {}, "-v": {}, "-V": {},
+	flagHelp: {}, "-h": {},
 }
 
 // versionCheckRule matches simple "X --version", "X -v", "X --help" etc.
@@ -339,7 +340,7 @@ func versionCheckRule() rule {
 			if len(fields) != 2 {
 				return ClassifyResult{}, false
 			}
-			if versionHelpFlags[fields[1]] {
+			if _, ok := versionHelpFlags[fields[1]]; ok {
 				return result, true
 			}
 			return ClassifyResult{}, false
@@ -348,7 +349,7 @@ func versionCheckRule() rule {
 			if len(args) != 1 {
 				return ClassifyResult{}, false
 			}
-			if versionHelpFlags[args[0]] {
+			if _, ok := versionHelpFlags[args[0]]; ok {
 				return result, true
 			}
 			return ClassifyResult{}, false
@@ -357,78 +358,78 @@ func versionCheckRule() rule {
 }
 
 // windowsSafeCmds is the set of Windows/cmd.exe safe read-only commands.
-var windowsSafeCmds = map[string]bool{
-	"where": true, "dir": true, "type": true, "findstr": true,
-	"ipconfig": true, "systeminfo": true, "tasklist": true,
-	"where.exe": true, "chcp": true, "ver": true, "set": true,
-	"hostname": true, "whoami": true,
+var windowsSafeCmds = map[string]struct{}{
+	"where": {}, "dir": {}, "type": {}, "findstr": {},
+	"ipconfig": {}, "systeminfo": {}, "tasklist": {},
+	"where.exe": {}, "chcp": {}, "ver": {}, "set": {},
+	"hostname": {}, "whoami": {},
 }
 
 // psCmdletsSafe is the set of PowerShell cmdlets considered safe (lowercase).
-var psCmdletsSafe = map[string]bool{
+var psCmdletsSafe = map[string]struct{}{
 	// Existing
-	"get-command": true, "get-process": true, "get-childitem": true,
-	"get-content": true, "get-location": true,
-	"select-object": true, "format-list": true, "format-table": true,
-	"write-output": true, "write-host": true, "test-path": true,
+	"get-command": {}, "get-process": {}, "get-childitem": {},
+	"get-content": {}, "get-location": {},
+	"select-object": {}, "format-list": {}, "format-table": {},
+	"write-output": {}, "write-host": {}, "test-path": {},
 	// Read-only Get-* cmdlets
-	"get-service": true, "get-item": true, "get-itemproperty": true,
-	"get-wmiobject": true, "get-ciminstance": true,
-	"get-netadapter": true, "get-nettcpconnection": true,
-	"get-date": true, "get-help": true, "get-member": true,
-	"get-psdrive": true, "get-volume": true, "get-computerinfo": true,
-	"get-pnpdevice": true, "get-winevent": true,
-	"get-acl": true, "get-clipboard": true, "get-culture": true,
-	"get-disk": true, "get-eventlog": true, "get-executionpolicy": true,
-	"get-filehash": true, "get-host": true, "get-hotfix": true,
-	"get-netipaddress": true, "get-netipinterface": true, "get-netroute": true,
-	"get-partition": true, "get-physicaldisk": true,
-	"get-timezone": true, "get-variable": true,
+	"get-service": {}, "get-item": {}, "get-itemproperty": {},
+	"get-wmiobject": {}, "get-ciminstance": {},
+	"get-netadapter": {}, "get-nettcpconnection": {},
+	"get-date": {}, "get-help": {}, "get-member": {},
+	"get-psdrive": {}, "get-volume": {}, "get-computerinfo": {},
+	"get-pnpdevice": {}, "get-winevent": {},
+	"get-acl": {}, "get-clipboard": {}, "get-culture": {},
+	"get-disk": {}, "get-eventlog": {}, "get-executionpolicy": {},
+	"get-filehash": {}, "get-host": {}, "get-hotfix": {},
+	"get-netipaddress": {}, "get-netipinterface": {}, "get-netroute": {},
+	"get-partition": {}, "get-physicaldisk": {},
+	"get-timezone": {}, "get-variable": {},
 	// Read-only pipeline/formatting cmdlets
-	"measure-object": true, "sort-object": true, "group-object": true,
-	"convertto-json": true, "convertfrom-json": true,
-	"out-string": true, "out-null": true,
-	"where-object": true, "foreach-object": true,
-	"format-wide": true, "tee-object": true,
-	"select-string": true, "compare-object": true,
-	"convertto-csv": true, "convertfrom-csv": true,
-	"convertto-xml": true, "convertto-html": true,
-	"confirm-securebootefi": true,
-	"resolve-dnsname": true,
-	"test-netconnection": true,
+	"measure-object": {}, "sort-object": {}, "group-object": {},
+	"convertto-json": {}, "convertfrom-json": {},
+	"out-string": {}, "out-null": {},
+	"where-object": {}, "foreach-object": {},
+	"format-wide": {}, "tee-object": {},
+	"select-string": {}, "compare-object": {},
+	"convertto-csv": {}, "convertfrom-csv": {},
+	"convertto-xml": {}, "convertto-html": {},
+	"confirm-securebootefi": {},
+	"resolve-dnsname": {},
+	"test-netconnection": {},
 }
 
 // psCmdletsDangerous lists PowerShell cmdlets that mutate state and must not
 // be allowed even when they appear as arguments or downstream of a pipe from
 // a safe cmdlet (e.g. "Get-Process | Stop-Process -Force").  Checked in
 // lowercase for case-insensitive matching.
-var psCmdletsDangerous = map[string]bool{
-	"stop-process":        true,
-	"remove-item":         true,
-	"stop-service":        true,
-	"restart-service":     true,
-	"clear-content":       true,
-	"set-executionpolicy": true,
-	"new-item":            true,
-	"new-service":         true,
-	"new-object":          true,
-	"start-process":       true,
-	"start-service":       true,
-	"invoke-expression":   true,
-	"invoke-command":      true,
-	"invoke-webrequest":   true,
-	"invoke-restmethod":   true,
-	"set-content":         true,
-	"set-itemproperty":    true,
-	"add-content":         true,
-	"add-type":            true,
+var psCmdletsDangerous = map[string]struct{}{
+	"stop-process":        {},
+	"remove-item":         {},
+	"stop-service":        {},
+	"restart-service":     {},
+	"clear-content":       {},
+	"set-executionpolicy": {},
+	"new-item":            {},
+	"new-service":         {},
+	"new-object":          {},
+	"start-process":       {},
+	"start-service":       {},
+	"invoke-expression":   {},
+	"invoke-command":      {},
+	"invoke-webrequest":   {},
+	"invoke-restmethod":   {},
+	"set-content":         {},
+	"set-itemproperty":    {},
+	"add-content":         {},
+	"add-type":            {},
 }
 
 // hasDangerousPSCmdlet reports whether any token in fields matches a
 // dangerous PowerShell cmdlet (case-insensitive).
 func hasDangerousPSCmdlet(fields []string) bool {
 	for _, f := range fields {
-		if psCmdletsDangerous[strings.ToLower(f)] {
+		if _, ok := psCmdletsDangerous[strings.ToLower(f)]; ok {
 			return true
 		}
 	}
@@ -459,11 +460,11 @@ func windowsSafeCommandsRule() rule {
 				return ClassifyResult{}, false
 			}
 			cmd := baseCommand(fields[0])
-			if windowsSafeCmds[cmd] {
+			if _, ok := windowsSafeCmds[cmd]; ok {
 				return result, true
 			}
 			// PowerShell cmdlets (case-insensitive).
-			if psCmdletsSafe[strings.ToLower(cmd)] {
+			if _, ok := psCmdletsSafe[strings.ToLower(cmd)]; ok {
 				return result, true
 			}
 			// $env: variable reads (e.g. "$env:PATH").
@@ -478,10 +479,10 @@ func windowsSafeCommandsRule() rule {
 				return ClassifyResult{}, false
 			}
 			cmd := baseCommand(name)
-			if windowsSafeCmds[cmd] {
+			if _, ok := windowsSafeCmds[cmd]; ok {
 				return result, true
 			}
-			if psCmdletsSafe[strings.ToLower(cmd)] {
+			if _, ok := psCmdletsSafe[strings.ToLower(cmd)]; ok {
 				return result, true
 			}
 			if strings.HasPrefix(cmd, "$env:") {
@@ -493,9 +494,9 @@ func windowsSafeCommandsRule() rule {
 }
 
 // cdSleepCmds is the set of directory navigation and sleep commands.
-var cdSleepCmds = map[string]bool{
-	"cd": true, "pushd": true, "popd": true,
-	"sleep": true,
+var cdSleepCmds = map[string]struct{}{
+	"cd": {}, "pushd": {}, "popd": {},
+	"sleep": {},
 }
 
 // cdSleepRule matches directory navigation (cd/pushd/popd) and sleep.
@@ -516,14 +517,14 @@ func cdSleepRule() rule {
 				return ClassifyResult{}, false
 			}
 			cmd := baseCommand(fields[0])
-			if !cdSleepCmds[cmd] {
+			if _, ok := cdSleepCmds[cmd]; !ok {
 				return ClassifyResult{}, false
 			}
 			return result, true
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			cmd := baseCommand(name)
-			if !cdSleepCmds[cmd] {
+			if _, ok := cdSleepCmds[cmd]; !ok {
 				return ClassifyResult{}, false
 			}
 			return result, true
@@ -532,8 +533,8 @@ func cdSleepRule() rule {
 }
 
 // processListCmds is the set of read-only process inspection commands.
-var processListCmds = map[string]bool{
-	"ps": true, "top": true, "htop": true, "pgrep": true,
+var processListCmds = map[string]struct{}{
+	"ps": {}, "top": {}, "htop": {}, "pgrep": {},
 }
 
 // processListRule matches read-only process inspection commands.
@@ -554,14 +555,14 @@ func processListRule() rule {
 				return ClassifyResult{}, false
 			}
 			cmd := baseCommand(fields[0])
-			if processListCmds[cmd] {
+			if _, ok := processListCmds[cmd]; ok {
 				return result, true
 			}
 			return ClassifyResult{}, false
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			cmd := baseCommand(name)
-			if processListCmds[cmd] {
+			if _, ok := processListCmds[cmd]; ok {
 				return result, true
 			}
 			return ClassifyResult{}, false
@@ -575,18 +576,18 @@ func processListRule() rule {
 // ---------------------------------------------------------------------------
 
 // devToolCmds is the set of scripting runtime commands.
-var devToolCmds = map[string]bool{
-	"python": true, "python3": true, "python3.11": true, "python3.12": true, "python3.13": true,
-	"python.exe": true, "node": true, "ruby": true, "perl": true, "php": true,
-	"java": true, "lua": true, "Rscript": true, "swift": true, "julia": true,
-	"deno": true, "bun": true, "ts-node": true, "npx": true, "uvx": true, "py": true,
-	"pytest": true, "py.test": true,
+var devToolCmds = map[string]struct{}{
+	"python": {}, "python3": {}, "python3.11": {}, "python3.12": {}, "python3.13": {},
+	"python.exe": {}, "node": {}, "ruby": {}, "perl": {}, "php": {},
+	"java": {}, "lua": {}, "Rscript": {}, "swift": {}, "julia": {},
+	"deno": {}, "bun": {}, "ts-node": {}, "npx": {}, "uvx": {}, "py": {},
+	"pytest": {}, "py.test": {},
 }
 
 // pythonCmds is the subset of devToolCmds that are Python interpreters.
-var pythonCmds = map[string]bool{
-	"python": true, "python3": true, "python3.11": true, "python3.12": true, "python3.13": true,
-	"python.exe": true, "py": true,
+var pythonCmds = map[string]struct{}{
+	"python": {}, "python3": {}, "python3.11": {}, "python3.12": {}, "python3.13": {},
+	"python.exe": {}, "py": {},
 }
 
 // devToolRunRule matches scripting runtime execution commands.
@@ -610,7 +611,7 @@ func devToolRunRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if !devToolCmds[base] {
+			if _, ok := devToolCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if devToolRunHasInstallPattern(base, fields[1:]) {
@@ -620,7 +621,7 @@ func devToolRunRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !devToolCmds[base] {
+			if _, ok := devToolCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if devToolRunHasInstallPattern(base, args) {
@@ -640,7 +641,7 @@ func devToolRunRule() rule {
 //     without confirmation — BUG-ALLOW-1)
 func devToolRunHasInstallPattern(base string, args []string) bool {
 	const installVerb = "install"
-	if pythonCmds[base] {
+	if _, ok := pythonCmds[base]; ok {
 		// Scan for "-m" followed by "pip"/"pip3" followed by "install".
 		for i := 0; i < len(args)-2; i++ {
 			if args[i] == "-m" && (args[i+1] == "pip" || args[i+1] == "pip3") && args[i+2] == installVerb {
@@ -669,15 +670,15 @@ func devToolRunHasInstallPattern(base string, args []string) bool {
 }
 
 // buildToolCmds is the set of build system and compiler commands.
-var buildToolCmds = map[string]bool{
-	"make": true, "cmake": true, "ninja": true, "meson": true,
-	"cargo": true, "rustc": true,
-	"mvn": true, "gradle": true, "gradlew": true, "ant": true,
-	"dotnet": true, "msbuild": true,
-	"xcodebuild": true,
-	"gcc": true, "g++": true, "clang": true, "clang++": true, "cc": true,
-	"ld": true, "ar": true, "nm": true, "objdump": true,
-	"bazel": true, "buck": true, "scons": true,
+var buildToolCmds = map[string]struct{}{
+	"make": {}, "cmake": {}, "ninja": {}, "meson": {},
+	"cargo": {}, "rustc": {},
+	"mvn": {}, "gradle": {}, "gradlew": {}, "ant": {},
+	"dotnet": {}, "msbuild": {},
+	"xcodebuild": {},
+	"gcc": {}, "g++": {}, "clang": {}, "clang++": {}, "cc": {},
+	"ld": {}, "ar": {}, "nm": {}, "objdump": {},
+	"bazel": {}, "buck": {}, "scons": {},
 }
 
 // buildToolRule matches build system and compiler commands.
@@ -701,7 +702,7 @@ func buildToolRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if !buildToolCmds[base] {
+			if _, ok := buildToolCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if buildToolHasInstall(base, fields[1:]) {
@@ -711,7 +712,7 @@ func buildToolRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !buildToolCmds[base] {
+			if _, ok := buildToolCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if buildToolHasInstall(base, args) {
@@ -725,9 +726,9 @@ func buildToolRule() rule {
 // dotnetAllowedSubcmds is the set of dotnet subcommands that are safe
 // build/test/format operations. Commands not in this set (new, add,
 // install, nuget, etc.) fall through to sandboxed — BUG-ALLOW-2.
-var dotnetAllowedSubcmds = map[string]bool{
-	"build": true, "run": true, "test": true, "clean": true,
-	"restore": true, "publish": true, "format": true, "watch": true,
+var dotnetAllowedSubcmds = map[string]struct{}{
+	"build": {}, "run": {}, "test": {}, "clean": {},
+	"restore": {}, "publish": {}, "format": {}, "watch": {},
 }
 
 // buildToolHasInstall reports whether the build tool command contains an
@@ -759,8 +760,10 @@ func buildToolHasInstall(base string, args []string) bool {
 		}
 		// Whitelist approach: only allow known safe subcommands.
 		// Bare "dotnet" (no args) is fine (prints help).
-		if len(args) > 0 && !dotnetAllowedSubcmds[args[0]] {
-			return true
+		if len(args) > 0 {
+			if _, ok := dotnetAllowedSubcmds[args[0]]; !ok {
+				return true
+			}
 		}
 	case "cargo":
 		// "cargo install" installs binaries globally.
@@ -783,9 +786,9 @@ func buildToolHasInstall(base string, args []string) bool {
 
 // mvnAllowedSubcmds lists Maven goals/phases that are safe read-only or
 // build operations.
-var mvnAllowedSubcmds = map[string]bool{
-	"compile": true, "test": true, "verify": true, "package": true,
-	"validate": true, "clean": true,
+var mvnAllowedSubcmds = map[string]struct{}{
+	"compile": {}, "test": {}, "verify": {}, "package": {},
+	"validate": {}, "clean": {},
 }
 
 // mvnAllowedPrefixes lists Maven plugin prefixes whose goals are safe.
@@ -794,7 +797,7 @@ var mvnAllowedPrefixes = []string{"dependency:", "help:", "versions:"}
 // isMvnDisallowed reports whether a Maven subcommand/phase should be
 // rejected from the allow list (BUG-ALLOW-7).
 func isMvnDisallowed(sub string) bool {
-	if mvnAllowedSubcmds[sub] {
+	if _, ok := mvnAllowedSubcmds[sub]; ok {
 		return false
 	}
 	for _, p := range mvnAllowedPrefixes {
@@ -812,8 +815,8 @@ func isMvnDisallowed(sub string) bool {
 
 // makeDisallowedTargets lists make targets that modify or delete build
 // artifacts and should not be auto-allowed (BUG-ALLOW-8).
-var makeDisallowedTargets = map[string]bool{
-	"clean": true, "distclean": true, "uninstall": true, "install": true,
+var makeDisallowedTargets = map[string]struct{}{
+	"clean": {}, "distclean": {}, "uninstall": {}, "install": {},
 }
 
 // isMakeDisallowed reports whether the make args contain a disallowed
@@ -828,7 +831,7 @@ func isMakeDisallowed(args []string) bool {
 		if strings.Contains(a, "=") {
 			continue
 		}
-		if makeDisallowedTargets[a] {
+		if _, ok := makeDisallowedTargets[a]; ok {
 			return true
 		}
 	}
@@ -836,19 +839,19 @@ func isMakeDisallowed(args []string) bool {
 }
 
 // goToolCmds is the set of Go ecosystem tool commands.
-var goToolCmds = map[string]bool{
-	"go": true, "gofmt": true, "gopls": true, "dlv": true,
-	"golangci-lint": true, "staticcheck": true, "govulncheck": true,
-	"gotests": true, "gomodifytags": true, "impl": true,
+var goToolCmds = map[string]struct{}{
+	"go": {}, "gofmt": {}, "gopls": {}, "dlv": {},
+	"golangci-lint": {}, "staticcheck": {}, "govulncheck": {},
+	"gotests": {}, "gomodifytags": {}, "impl": {},
 }
 
 // goStateModifySubcmds lists go subcommands that modify system state and
 // should not be auto-allowed.  "install" and "get" download/build remote
 // code; "env -w" writes persistent Go environment variables.  These fall
 // through to the escalated package-install rule or default Sandboxed.
-var goStateModifySubcmds = map[string]bool{
-	"install": true,
-	"get":     true,
+var goStateModifySubcmds = map[string]struct{}{
+	"install": {},
+	"get":     {},
 }
 
 // goToolRule matches Go ecosystem tool commands.
@@ -870,13 +873,13 @@ func goToolRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if !goToolCmds[base] {
+			if _, ok := goToolCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			// For the "go" binary, reject state-modifying subcommands.
 			if base == "go" && len(fields) > 1 {
 				sub := fields[1]
-				if goStateModifySubcmds[sub] {
+				if _, ok := goStateModifySubcmds[sub]; ok {
 					return ClassifyResult{}, false
 				}
 				// "go env -w" writes persistent env vars.
@@ -888,12 +891,12 @@ func goToolRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !goToolCmds[base] {
+			if _, ok := goToolCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if base == "go" && len(args) > 0 {
 				sub := args[0]
-				if goStateModifySubcmds[sub] {
+				if _, ok := goStateModifySubcmds[sub]; ok {
 					return ClassifyResult{}, false
 				}
 				if sub == cmdEnv && containsFlag(args[1:], "-w") {
@@ -910,9 +913,9 @@ func goToolRule() rule {
 // and rmdir /s on Windows can delete entire trees. Both fall through to Sandboxed
 // where the sandbox provides the real security boundary. Forbidden rules catch
 // the worst cases (rm -rf /, rmdir /s /q .).
-var fileManagementCmds = map[string]bool{
-	"mkdir": true, "cp": true, "mv": true, "ln": true, "touch": true,
-	"install": true,
+var fileManagementCmds = map[string]struct{}{
+	"mkdir": {}, "cp": {}, "mv": {}, "ln": {}, "touch": {},
+	"install": {},
 }
 
 // fileManagementRule matches basic file management commands.
@@ -934,13 +937,13 @@ func fileManagementRule() rule {
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if fileManagementCmds[baseCommand(fields[0])] {
+			if _, ok := fileManagementCmds[baseCommand(fields[0])]; ok {
 				return result, true
 			}
 			return ClassifyResult{}, false
 		},
 		MatchArgs: func(name string, _ []string) (ClassifyResult, bool) {
-			if fileManagementCmds[baseCommand(name)] {
+			if _, ok := fileManagementCmds[baseCommand(name)]; ok {
 				return result, true
 			}
 			return ClassifyResult{}, false
@@ -949,12 +952,12 @@ func fileManagementRule() rule {
 }
 
 // textProcessingCmds is the set of text manipulation commands.
-var textProcessingCmds = map[string]bool{
-	"awk": true, "sed": true, "jq": true, "yq": true,
-	"cut": true, "tr": true, "tee": true, "diff": true, "comm": true,
-	"paste": true, "column": true, "expand": true, "fold": true,
-	"fmt": true, "nl": true, "rev": true, "strings": true, "od": true,
-	"hexdump": true, "xxd": true,
+var textProcessingCmds = map[string]struct{}{
+	"awk": {}, "sed": {}, "jq": {}, "yq": {},
+	"cut": {}, "tr": {}, "tee": {}, "diff": {}, "comm": {},
+	"paste": {}, "column": {}, "expand": {}, "fold": {},
+	"fmt": {}, "nl": {}, "rev": {}, "strings": {}, "od": {},
+	"hexdump": {}, "xxd": {},
 }
 
 // textProcessingRule matches text manipulation commands. For sed, the rule
@@ -977,7 +980,7 @@ func textProcessingRule() rule {
 				return ClassifyResult{}, false
 			}
 			cmd := baseCommand(fields[0])
-			if !textProcessingCmds[cmd] {
+			if _, ok := textProcessingCmds[cmd]; !ok {
 				return ClassifyResult{}, false
 			}
 			// For sed, reject if -i flag is present (in-place edit).
@@ -988,7 +991,7 @@ func textProcessingRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			cmd := baseCommand(name)
-			if !textProcessingCmds[cmd] {
+			if _, ok := textProcessingCmds[cmd]; !ok {
 				return ClassifyResult{}, false
 			}
 			if cmd == cmdSed && hasSedInPlaceFlag(args) {
@@ -1011,18 +1014,18 @@ func hasSedInPlaceFlag(args []string) bool {
 }
 
 // networkDiagCmds is the set of network diagnostic commands.
-var networkDiagCmds = map[string]bool{
-	"ping": true, "ping6": true, "dig": true, "nslookup": true,
-	"traceroute": true, "traceroute6": true, "tracepath": true,
-	"host": true, "whois": true, "ifconfig": true, "route": true,
-	"netstat": true, "ss": true, "lsof": true,
-	"mtr": true, "arp": true,
+var networkDiagCmds = map[string]struct{}{
+	"ping": {}, "ping6": {}, "dig": {}, "nslookup": {},
+	"traceroute": {}, "traceroute6": {}, "tracepath": {},
+	"host": {}, "whois": {}, "ifconfig": {}, "route": {},
+	"netstat": {}, "ss": {}, "lsof": {},
+	"mtr": {}, "arp": {},
 }
 
 // routeWriteSubs lists route subcommands that modify the routing table.
 // Plain "route", "route print", "route -n" remain allowed as diagnostics.
-var routeWriteSubs = map[string]bool{
-	"add": true, "delete": true, "del": true, "change": true, "flush": true,
+var routeWriteSubs = map[string]struct{}{
+	"add": {}, "delete": {}, "del": {}, "change": {}, "flush": {},
 }
 
 // networkDiagnosticRule matches network diagnostic commands.
@@ -1045,23 +1048,27 @@ func networkDiagnosticRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if !networkDiagCmds[base] {
+			if _, ok := networkDiagCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			// Reject route write subcommands (add, delete, change, flush).
-			if base == "route" && len(fields) >= 2 && routeWriteSubs[fields[1]] {
-				return ClassifyResult{}, false
+			if base == "route" && len(fields) >= 2 {
+				if _, ok := routeWriteSubs[fields[1]]; ok {
+					return ClassifyResult{}, false
+				}
 			}
 			return result, true
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !networkDiagCmds[base] {
+			if _, ok := networkDiagCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			// Reject route write subcommands.
-			if base == "route" && len(args) >= 1 && routeWriteSubs[args[0]] {
-				return ClassifyResult{}, false
+			if base == "route" && len(args) >= 1 {
+				if _, ok := routeWriteSubs[args[0]]; ok {
+					return ClassifyResult{}, false
+				}
 			}
 			return result, true
 		},
@@ -1069,11 +1076,11 @@ func networkDiagnosticRule() rule {
 }
 
 // archiveToolCmds is the set of archive and compression commands.
-var archiveToolCmds = map[string]bool{
-	"tar": true, "zip": true, "unzip": true, "zipinfo": true,
-	"gzip": true, "gunzip": true, "bzip2": true, "bunzip2": true,
-	"xz": true, "unxz": true, "zstd": true, "unzstd": true,
-	"7z": true, "7za": true, "rar": true, "unrar": true,
+var archiveToolCmds = map[string]struct{}{
+	"tar": {}, "zip": {}, "unzip": {}, "zipinfo": {},
+	"gzip": {}, "gunzip": {}, "bzip2": {}, "bunzip2": {},
+	"xz": {}, "unxz": {}, "zstd": {}, "unzstd": {},
+	"7z": {}, "7za": {}, "rar": {}, "unrar": {},
 }
 
 // archiveToolRule matches archive and compression commands.
@@ -1097,7 +1104,7 @@ func archiveToolRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if !archiveToolCmds[base] {
+			if _, ok := archiveToolCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if !isArchiveReadOnly(base, fields[1:]) {
@@ -1107,7 +1114,7 @@ func archiveToolRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !archiveToolCmds[base] {
+			if _, ok := archiveToolCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if !isArchiveReadOnly(base, args) {
@@ -1120,16 +1127,16 @@ func archiveToolRule() rule {
 
 // tarExtractFlags lists tar flags that extract or create files on disk.
 // -x/--extract/--get extract; -c/--create create archives (writes files).
-var tarExtractFlags = map[string]bool{
-	"-x": true, "--extract": true, "--get": true,
-	"-c": true, "--create": true,
+var tarExtractFlags = map[string]struct{}{
+	"-x": {}, "--extract": {}, "--get": {},
+	"-c": {}, "--create": {},
 }
 
 // unzipReadOnlyFlags lists unzip flags that are read-only operations.
-var unzipReadOnlyFlags = map[string]bool{
-	"-l": true, // list
-	"-p": true, // pipe to stdout
-	"-t": true, // test archive
+var unzipReadOnlyFlags = map[string]struct{}{
+	"-l": {}, // list
+	"-p": {}, // pipe to stdout
+	"-t": {}, // test archive
 }
 
 // isArchiveReadOnly reports whether the archive command with the given
@@ -1232,7 +1239,7 @@ func isUnrarReadOnly(args []string) bool {
 func isTarReadOnly(args []string) bool {
 	for i, a := range args {
 		// Long flags.
-		if tarExtractFlags[a] {
+		if _, ok := tarExtractFlags[a]; ok {
 			return false
 		}
 		// Combined short flags with dash (e.g. -xzf, -czf, -tvf).
@@ -1262,7 +1269,7 @@ func isTarReadOnly(args []string) bool {
 // Any other unzip invocation (including bare "unzip file.zip") is rejected.
 func isUnzipReadOnly(args []string) bool {
 	for _, a := range args {
-		if unzipReadOnlyFlags[a] {
+		if _, ok := unzipReadOnlyFlags[a]; ok {
 			return true
 		}
 	}
@@ -1274,13 +1281,13 @@ func isUnzipReadOnly(args []string) bool {
 // are excluded (escalated as eval-exec). Command-runner utilities (env,
 // command, timeout, xargs, time, strace, ltrace, nice) are excluded because
 // they execute arbitrary commands as arguments.
-var shellBuiltinCmds = map[string]bool{
-	"export": true, "set": true, "unset": true,
-	"printf": true, "tput": true, "alias": true, "unalias": true,
-	"type": true, "hash": true, "builtin": true,
-	"read": true, "declare": true, "local": true, "readonly": true,
-	"trap": true, "wait": true, "jobs": true, "fg": true, "bg": true,
-	"times": true, "ulimit": true, "umask": true, "getopts": true,
+var shellBuiltinCmds = map[string]struct{}{
+	"export": {}, "set": {}, "unset": {},
+	"printf": {}, "tput": {}, "alias": {}, "unalias": {},
+	"type": {}, "hash": {}, "builtin": {},
+	"read": {}, "declare": {}, "local": {}, "readonly": {},
+	"trap": {}, "wait": {}, "jobs": {}, "fg": {}, "bg": {},
+	"times": {}, "ulimit": {}, "umask": {}, "getopts": {},
 }
 
 // shellBuiltinRule matches common shell builtins and utility commands.
@@ -1302,7 +1309,7 @@ func shellBuiltinRule() rule {
 			if len(fields) == 0 {
 				return ClassifyResult{}, false
 			}
-			if !shellBuiltinCmds[baseCommand(fields[0])] {
+			if _, ok := shellBuiltinCmds[baseCommand(fields[0])]; !ok {
 				return ClassifyResult{}, false
 			}
 			// Reject output redirection and clipboard pipes.
@@ -1312,7 +1319,7 @@ func shellBuiltinRule() rule {
 			return result, true
 		},
 		MatchArgs: func(name string, _ []string) (ClassifyResult, bool) {
-			if shellBuiltinCmds[baseCommand(name)] {
+			if _, ok := shellBuiltinCmds[baseCommand(name)]; ok {
 				return result, true
 			}
 			return ClassifyResult{}, false
@@ -1321,9 +1328,9 @@ func shellBuiltinRule() rule {
 }
 
 // openCmds is the set of commands that open URLs/files in default applications.
-var openCmds = map[string]bool{
-	"open": true, "xdg-open": true, "start": true,
-	"wslview": true, "sensible-browser": true, "x-www-browser": true,
+var openCmds = map[string]struct{}{
+	"open": {}, "xdg-open": {}, "start": {},
+	"wslview": {}, "sensible-browser": {}, "x-www-browser": {},
 }
 
 // openCommandRule matches commands that open URLs or files in the default
@@ -1348,7 +1355,7 @@ func openCommandRule() rule {
 				return ClassifyResult{}, false
 			}
 			base := baseCommand(fields[0])
-			if !openCmds[base] {
+			if _, ok := openCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			// Windows "start" can launch executables; restrict to URLs.
@@ -1359,7 +1366,7 @@ func openCommandRule() rule {
 		},
 		MatchArgs: func(name string, args []string) (ClassifyResult, bool) {
 			base := baseCommand(name)
-			if !openCmds[base] {
+			if _, ok := openCmds[base]; !ok {
 				return ClassifyResult{}, false
 			}
 			if base == "start" && !startArgsAreSafe(args) {
